@@ -13,6 +13,10 @@ import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { RolesModule } from './modules/roles/roles.module';
+import { RoomsModule } from './modules/rooms/rooms.module';
+import { InstructorsModule } from './modules/instructors/instructors.module';
+import { ClassTypesModule } from './modules/class-types/class-types.module';
+import { PackagesModule } from './modules/packages/packages.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -32,6 +36,10 @@ import { RolesGuard } from './common/guards/roles.guard';
     AuthModule,
     UsersModule,
     RolesModule,
+    RoomsModule,
+    InstructorsModule,
+    ClassTypesModule,
+    PackagesModule,
   ],
   providers: [
     // JwtAuthGuard runs first to populate req.user, then RolesGuard reads it

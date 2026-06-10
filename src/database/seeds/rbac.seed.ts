@@ -76,6 +76,16 @@ const PERMISSIONS: Pick<Permission, 'action' | 'description'>[] = [
   { action: 'settings:manage', description: 'Manage studio settings' },
   // audit_logs
   { action: 'audit_logs:read', description: 'View audit logs' },
+  // rooms
+  { action: 'rooms:read', description: 'View rooms' },
+  { action: 'rooms:create', description: 'Create rooms' },
+  { action: 'rooms:update', description: 'Update rooms' },
+  { action: 'rooms:delete', description: 'Deactivate rooms' },
+  // instructors
+  { action: 'instructors:read', description: 'View instructors' },
+  { action: 'instructors:create', description: 'Create instructors' },
+  { action: 'instructors:update', description: 'Update instructors' },
+  { action: 'instructors:delete', description: 'Deactivate instructors' },
 ];
 
 const ALL_ACTIONS = PERMISSIONS.map((p) => p.action);
@@ -127,6 +137,14 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'media:delete',
     'settings:read',
     'audit_logs:read',
+    'rooms:read',
+    'rooms:create',
+    'rooms:update',
+    'rooms:delete',
+    'instructors:read',
+    'instructors:create',
+    'instructors:update',
+    'instructors:delete',
   ],
 
   front_desk: [
@@ -145,6 +163,8 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'packages:read',
     'packages:sell',
     'payments:read_all',
+    'rooms:read',
+    'instructors:read',
   ],
 
   instructor: [
@@ -153,6 +173,8 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'bookings:check_in',
     'bookings:mark_no_show',
     'class_types:read',
+    'rooms:read',
+    'instructors:read',
   ],
 
   member: [
