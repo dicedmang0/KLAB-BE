@@ -1,0 +1,21 @@
+services:
+  klab-postgres:
+    image: postgres:16
+    container_name: klab-postgres
+    environment:
+      POSTGRES_DB: klab_booking
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Ihsan17
+    ports:
+      - "5433:5432"
+    volumes:
+      - klab_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d klab_booking"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  klab_postgres_data:
