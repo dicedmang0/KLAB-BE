@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource, Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { Payment, PaymentStatus } from './entities/payment.entity';
+import { ListPaymentsDto } from './dto/list-payments.dto';
 import { Package, PackageStatus } from '../packages/entities/package.entity';
 import { Member } from '../members/entities/member.entity';
 import {
@@ -22,6 +23,78 @@ import { MembersService } from '../members/members.service';
 import { DokuClient } from '../doku/doku.client';
 import { DokuSignatureService } from '../doku/doku-signature.service';
 import { DokuTransactionsService } from '../doku/doku-transactions.service';
+
+// ── Admin read-only views ─────────────────────────────────────────────────────
+
+interface PaymentMemberSummary {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+}
+
+interface PaymentPackageSummary {
+  id: string;
+  name: string;
+}
+
+export interface PaymentView {
+  id: string;
+  payment_code: string;
+  member: PaymentMemberSummary | null;
+  package: PaymentPackageSummary | null;
+  amount_idr: number;
+  method: string | null;
+  gateway: string;
+  status: PaymentStatus;
+  external_reference: string | null;
+  paid_at: Date | null;
+  expired_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface PaymentDetailView extends PaymentView {
+  checkout_url: string | null;
+}
+
+export interface PaginatedPayments {
+  items: PaymentView[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+function toPaymentView(p: Payment): PaymentView {
+  return {
+    id: p.id,
+    payment_code: p.payment_code,
+    member: p.member
+      ? {
+          id: p.member.id,
+          first_name: p.member.first_name ?? null,
+          last_name: p.member.last_name ?? null,
+          email: p.member.email ?? null,
+        }
+      : null,
+    package: p.package ? { id: p.package.id, name: p.package.name } : null,
+    amount_idr: p.amount_idr,
+    method: p.method ?? null,
+    gateway: p.gateway,
+    status: p.status,
+    external_reference: p.external_reference ?? null,
+    paid_at: p.paid_at ?? null,
+    expired_at: p.expired_at ?? null,
+    created_at: p.created_at,
+    updated_at: p.updated_at,
+  };
+}
+
+function toPaymentDetailView(p: Payment): PaymentDetailView {
+  return { ...toPaymentView(p), checkout_url: p.checkout_url ?? null };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface CheckoutResult {
   payment_id: string;
@@ -372,5 +445,55 @@ export class PaymentsService {
     const ts = Date.now().toString(36).toUpperCase();
     const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
     return `INV-${ts}${rand}`;
+  }
+
+  // ── Admin read-only queries ──────────────────────────────────────────────────
+
+  async findAllForAdmin(filter: ListPaymentsDto): Promise<PaginatedPayments> {
+    const page = filter.page ?? 1;
+    const limit = filter.limit ?? 20;
+
+    const qb = this.paymentsRepo
+      .createQueryBuilder('p')
+      .leftJoinAndSelect('p.member', 'm')
+      .leftJoinAndSelect('p.package', 'pkg')
+      .orderBy('p.created_at', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    if (filter.status) {
+      qb.andWhere('p.status = :status', { status: filter.status });
+    }
+    if (filter.gateway) {
+      qb.andWhere('p.gateway = :gateway', { gateway: filter.gateway });
+    }
+    if (filter.payment_code) {
+      qb.andWhere('p.payment_code = :payment_code', { payment_code: filter.payment_code });
+    }
+    if (filter.from) {
+      qb.andWhere('p.created_at >= :from', { from: new Date(filter.from) });
+    }
+    if (filter.to) {
+      qb.andWhere('p.created_at <= :to', { to: new Date(filter.to) });
+    }
+    if (filter.q) {
+      qb.andWhere('(m.email ILIKE :q OR m.first_name ILIKE :q OR m.last_name ILIKE :q)', {
+        q: `%${filter.q}%`,
+      });
+    }
+
+    const [payments, total] = await qb.getManyAndCount();
+    return { items: payments.map(toPaymentView), total, page, limit };
+  }
+
+  async findByIdForAdmin(id: string): Promise<PaymentDetailView> {
+    const payment = await this.paymentsRepo
+      .createQueryBuilder('p')
+      .leftJoinAndSelect('p.member', 'm')
+      .leftJoinAndSelect('p.package', 'pkg')
+      .where('p.id = :id', { id })
+      .getOne();
+    if (!payment) throw new NotFoundException(`Payment ${id} not found`);
+    return toPaymentDetailView(payment);
   }
 }

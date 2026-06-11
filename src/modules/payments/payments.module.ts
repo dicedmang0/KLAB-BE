@@ -6,6 +6,7 @@ import { MemberPackage } from '../member-packages/entities/member-package.entity
 import { PaymentsService } from './payments.service';
 import { MemberPaymentsController } from './member-payments.controller';
 import { DokuCallbackController } from './doku-callback.controller';
+import { AdminPaymentsController } from './admin-payments.controller';
 import { MembersModule } from '../members/members.module';
 import { CreditsModule } from '../credits/credits.module';
 import { DokuModule } from '../doku/doku.module';
@@ -17,7 +18,7 @@ import { DokuModule } from '../doku/doku.module';
     CreditsModule,
     DokuModule,
   ],
-  controllers: [MemberPaymentsController, DokuCallbackController],
+  controllers: [MemberPaymentsController, DokuCallbackController, AdminPaymentsController],
   providers: [PaymentsService],
   exports: [PaymentsService],
 })

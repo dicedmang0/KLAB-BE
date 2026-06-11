@@ -4,6 +4,7 @@ import { DokuTransaction } from './entities/doku-transaction.entity';
 import { DokuSignatureService } from './doku-signature.service';
 import { DokuClient } from './doku.client';
 import { DokuTransactionsService } from './doku-transactions.service';
+import { AdminDokuTransactionsController } from './admin-doku-transactions.controller';
 
 /**
  * Low-level DOKU concerns (signature, outbound client, callback audit log).
@@ -12,6 +13,7 @@ import { DokuTransactionsService } from './doku-transactions.service';
  */
 @Module({
   imports: [TypeOrmModule.forFeature([DokuTransaction])],
+  controllers: [AdminDokuTransactionsController],
   providers: [DokuSignatureService, DokuClient, DokuTransactionsService],
   exports: [DokuSignatureService, DokuClient, DokuTransactionsService],
 })
