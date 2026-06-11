@@ -21,6 +21,7 @@ import { SchedulesModule } from './modules/schedules/schedules.module';
 import { MembersModule } from './modules/members/members.module';
 import { CreditsModule } from './modules/credits/credits.module';
 import { BookingsModule } from './modules/bookings/bookings.module';
+import { MemberPackagesModule } from './modules/member-packages/member-packages.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -48,6 +49,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     MembersModule,
     CreditsModule,
     BookingsModule,
+    MemberPackagesModule,
   ],
   providers: [
     // JwtAuthGuard runs first to populate req.user, then RolesGuard reads it
