@@ -22,4 +22,6 @@ export const envValidationSchema = Joi.object({
   DOKU_CHECKOUT_PRODUCTION_URL: Joi.string().uri().optional(),
   DOKU_CALLBACK_URL: Joi.string().uri().optional(),
   DOKU_RETURN_URL: Joi.string().uri().optional(),
+  // Local-only: bypass the outbound DOKU network call for smoke testing. Never true in prod.
+  DOKU_MOCK: Joi.boolean().truthy('true').falsy('false').default(false),
 });

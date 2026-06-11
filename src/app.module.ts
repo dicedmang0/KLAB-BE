@@ -7,6 +7,7 @@ import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import appConfig from './config/app.config';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
+import dokuConfig from './config/doku.config';
 import { envValidationSchema } from './config/env.validation';
 
 import { HealthModule } from './health/health.module';
@@ -23,6 +24,8 @@ import { CreditsModule } from './modules/credits/credits.module';
 import { BookingsModule } from './modules/bookings/bookings.module';
 import { MemberPackagesModule } from './modules/member-packages/member-packages.module';
 import { PublicModule } from './modules/public/public.module';
+import { PaymentsModule } from './modules/payments/payments.module';
+import { DokuModule } from './modules/doku/doku.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -30,7 +33,7 @@ import { RolesGuard } from './common/guards/roles.guard';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, databaseConfig, jwtConfig],
+      load: [appConfig, databaseConfig, jwtConfig, dokuConfig],
       validationSchema: envValidationSchema,
     }),
     TypeOrmModule.forRootAsync({
@@ -52,6 +55,8 @@ import { RolesGuard } from './common/guards/roles.guard';
     BookingsModule,
     MemberPackagesModule,
     PublicModule,
+    DokuModule,
+    PaymentsModule,
   ],
   providers: [
     // JwtAuthGuard runs first to populate req.user, then RolesGuard reads it
