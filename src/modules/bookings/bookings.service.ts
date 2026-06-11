@@ -40,6 +40,25 @@ export class BookingsService {
 
   // ── Reads ───────────────────────────────────────────────────────────────
 
+  /**
+   * Returns a booking's full detail (with nested schedule relations) if and only
+   * if it belongs to the requesting user. The member_id filter in the WHERE clause
+   * is the ownership gate — a booking that exists but belongs to a different member
+   * returns null, which becomes a 404 (not a 403), preventing enumeration.
+   */
+  async findOwnDetail(userId: string, bookingId: string): Promise<Booking> {
+    const member = await this.membersService.findByUserId(userId);
+    // No member row yet → the user has no bookings → 404 is correct.
+    if (!member) throw new NotFoundException(`Booking ${bookingId} not found`);
+
+    const booking = await this.bookingsRepo.findOne({
+      where: { id: bookingId, member_id: member.id },
+      relations: ['schedule', 'schedule.class_type', 'schedule.instructor', 'schedule.room'],
+    });
+    if (!booking) throw new NotFoundException(`Booking ${bookingId} not found`);
+    return booking;
+  }
+
   async findOwn(userId: string): Promise<Booking[]> {
     const member = await this.membersService.findByUserId(userId);
     if (!member) return [];

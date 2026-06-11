@@ -14,6 +14,12 @@ export class MemberBookingsController {
     return this.bookingsService.findOwn(req.user.id);
   }
 
+  @Get(':id')
+  @Permissions('bookings:read_own')
+  findOne(@Param('id') id: string, @Request() req: any) {
+    return this.bookingsService.findOwnDetail(req.user.id, id);
+  }
+
   @Post()
   @Permissions('bookings:create')
   create(@Body() dto: CreateBookingDto, @Request() req: any) {

@@ -3,6 +3,18 @@ import { DataSource, EntityManager } from 'typeorm';
 import { Member } from '../members/entities/member.entity';
 import { CreditLedger, CreditLedgerType } from './entities/credit-ledger.entity';
 
+/** Member-safe ledger entry — strips internal `created_by` admin ID. */
+export interface CreditLedgerEntry {
+  id: string;
+  type: CreditLedgerType;
+  amount: number;
+  balance_after: number;
+  reason: string | null;
+  member_package_id: string | null;
+  booking_id: string | null;
+  created_at: Date;
+}
+
 export interface CreditEntryMeta {
   type: CreditLedgerType;
   reason?: string | null;
@@ -56,6 +68,28 @@ export class CreditsService {
       created_by: meta.createdBy ?? null,
     });
     return manager.save(CreditLedger, ledger);
+  }
+
+  /**
+   * Returns the most recent 50 ledger entries for a member, newest-first.
+   * Safe for member-facing endpoints: `created_by` (admin user ID) is stripped.
+   */
+  async findRecentLedger(memberId: string): Promise<CreditLedgerEntry[]> {
+    const rows = await this.dataSource.getRepository(CreditLedger).find({
+      where: { member_id: memberId },
+      order: { created_at: 'DESC' },
+      take: 50,
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      type: r.type,
+      amount: r.amount,
+      balance_after: r.balance_after,
+      reason: r.reason ?? null,
+      member_package_id: r.member_package_id ?? null,
+      booking_id: r.booking_id ?? null,
+      created_at: r.created_at,
+    }));
   }
 
   /**

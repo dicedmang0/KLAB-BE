@@ -5,6 +5,31 @@ import { Member, MemberStatus } from './entities/member.entity';
 import { User } from '../users/entities/user.entity';
 import { ListMembersDto } from './dto/list-members.dto';
 
+/** Member-facing profile — safe subset for the authenticated member's own view. */
+export interface MemberProfileView {
+  id: string;
+  user_id: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  phone: string | null;
+  status: MemberStatus;
+  credit_balance: number;
+}
+
+export function toMemberProfileView(member: Member): MemberProfileView {
+  return {
+    id: member.id,
+    user_id: member.user_id ?? null,
+    first_name: member.first_name ?? null,
+    last_name: member.last_name ?? null,
+    email: member.email ?? null,
+    phone: member.phone ?? null,
+    status: member.status,
+    credit_balance: member.credit_balance,
+  };
+}
+
 /** Admin-facing member projection — never exposes the linked user's password_hash. */
 export interface MemberView {
   id: string;
@@ -41,6 +66,13 @@ export class MembersService {
 
   findByUserId(userId: string): Promise<Member | null> {
     return this.membersRepo.findOne({ where: { user_id: userId } });
+  }
+
+  /** Safe profile for the authenticated member. Throws if no member row exists yet. */
+  async findMemberProfile(userId: string): Promise<MemberProfileView> {
+    const member = await this.membersRepo.findOne({ where: { user_id: userId } });
+    if (!member) throw new NotFoundException('Member profile not found');
+    return toMemberProfileView(member);
   }
 
   async findByIdOrFail(id: string): Promise<Member> {
