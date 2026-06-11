@@ -18,6 +18,9 @@ import { InstructorsModule } from './modules/instructors/instructors.module';
 import { ClassTypesModule } from './modules/class-types/class-types.module';
 import { PackagesModule } from './modules/packages/packages.module';
 import { SchedulesModule } from './modules/schedules/schedules.module';
+import { MembersModule } from './modules/members/members.module';
+import { CreditsModule } from './modules/credits/credits.module';
+import { BookingsModule } from './modules/bookings/bookings.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -42,6 +45,9 @@ import { RolesGuard } from './common/guards/roles.guard';
     ClassTypesModule,
     PackagesModule,
     SchedulesModule,
+    MembersModule,
+    CreditsModule,
+    BookingsModule,
   ],
   providers: [
     // JwtAuthGuard runs first to populate req.user, then RolesGuard reads it

@@ -8,6 +8,11 @@ export const envValidationSchema = Joi.object({
   JWT_EXPIRES_IN: Joi.string().default('7d'),
   CORS_ORIGIN: Joi.string().required(),
 
+  // Booking rules — hours before a schedule's start_time within which a
+  // cancellation still refunds credit. Sourced here until the Settings module
+  // (booking-rules) is built.
+  BOOKING_CANCELLATION_WINDOW_HOURS: Joi.number().integer().min(0).default(12),
+
   // DOKU — validated at startup so missing keys surface immediately in staging/production
   DOKU_ENV: Joi.string().valid('sandbox', 'production').default('sandbox'),
   DOKU_CLIENT_ID: Joi.string().allow('').optional(),
