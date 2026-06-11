@@ -183,4 +183,18 @@ $m2bal = Psql "SELECT credit_balance FROM members WHERE id='$m2'"
 if ($ns.status -eq 'no_show' -and $m2bal -eq '4') { Ok "no-show set status=no_show, credit forfeited (m2 balance=$m2bal)" }
 else { Write-Host "  FAIL  status=$($ns.status) m2balance=$m2bal" -ForegroundColor Red }
 
+# ── 9. admin members read ───────────────────────────────────────────────────
+Section '9. Admin members read (members:read)'
+$detail = ApiGet "/admin/members/$m1" $owner
+if ($detail.id -eq $m1 -and $detail.user.email -eq $m1Email -and $null -ne $detail.credit_balance) {
+  Ok "GET /admin/members/:id -> email=$($detail.user.email), credit_balance=$($detail.credit_balance)"
+} else { Write-Host "  FAIL  detail id=$($detail.id) email=$($detail.user.email)" -ForegroundColor Red }
+
+if ($null -eq $detail.user.password_hash) { Ok 'member view excludes password_hash' }
+else { Write-Host '  FAIL  password_hash leaked in member view' -ForegroundColor Red }
+
+$results = ApiGet "/admin/members?status=active&q=$m1Email" $owner
+if ($results | Where-Object { $_.id -eq $m1 }) { Ok "GET /admin/members?status=active&q=<m1 email> found m1" }
+else { Write-Host '  FAIL  filtered list did not include m1' -ForegroundColor Red }
+
 Write-Host "`nSmoke test complete.`n" -ForegroundColor Cyan
