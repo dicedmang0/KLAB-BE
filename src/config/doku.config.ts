@@ -38,5 +38,7 @@ export default registerAs('doku', () => {
     callbackPath: pathOf(callbackUrl, '/payments/doku/callback'),
     returnUrl: process.env.DOKU_RETURN_URL ?? 'http://localhost:3002/checkout/result',
     mock: (process.env.DOKU_MOCK ?? 'false').toLowerCase() === 'true',
+    // Local-only: gate temporary masked debug logging for the outbound checkout request.
+    debugLogging: (process.env.DOKU_DEBUG_LOGGING ?? 'false').toLowerCase() === 'true',
   };
 });

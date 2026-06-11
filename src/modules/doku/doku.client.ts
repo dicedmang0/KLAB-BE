@@ -80,6 +80,25 @@ export class DokuClient {
     };
     const signatureValue = this.signature.sign(headers, checkoutPath, rawBody);
 
+    // TEMP DEBUG (gated by DOKU_DEBUG_LOGGING): confirm the effective Client-Id sent to
+    // DOKU without leaking secrets. Masks Client-Id (length + first 6 / last 4 only);
+    // never logs the secret key or signature.
+    const debugLogging = this.config.get<boolean>('doku.debugLogging');
+    if (debugLogging) {
+      const maskedClientId =
+        clientId.length > 10
+          ? `${clientId.slice(0, 6)}…${clientId.slice(-4)}`
+          : '<too-short-to-mask>';
+      this.logger.debug(
+        `[DOKU DEBUG] env=${this.config.get<string>('doku.env')} ` +
+          `mock=${this.config.get<boolean>('doku.mock')} ` +
+          `checkoutUrl=${checkoutUrl} ` +
+          `requestTarget=${checkoutPath} ` +
+          `clientIdLen=${clientId.length} ` +
+          `clientId=${maskedClientId}`,
+      );
+    }
+
     try {
       const res = await fetch(checkoutUrl, {
         method: 'POST',
@@ -95,20 +114,30 @@ export class DokuClient {
       });
 
       const json = (await res.json()) as Record<string, any>;
+      // TEMP DEBUG (gated by DOKU_DEBUG_LOGGING): surface DOKU HTTP status + response body.
+      if (debugLogging) {
+        this.logger.debug(`[DOKU DEBUG] status=${res.status} body=${JSON.stringify(json)}`);
+      }
       if (!res.ok) {
         this.logger.error(`DOKU checkout failed (${res.status}): ${JSON.stringify(json)}`);
         throw new BadGatewayException('DOKU checkout request failed');
       }
 
-      const payment = (json.payment ?? {}) as Record<string, any>;
+      // Real DOKU Checkout wraps the result under `response.payment`; the legacy/mock
+      // shape exposed `payment` at the top level. Support both.
+      const responseEnvelope = (json.response ?? {}) as Record<string, any>;
+      const payment = (responseEnvelope.payment ?? json.payment ?? {}) as Record<string, any>;
       const url = payment.url;
       if (!url) {
-        throw new BadGatewayException('DOKU response did not include a payment URL');
+        throw new BadGatewayException('DOKU checkout response missing response.payment.url');
       }
       return {
         paymentUrl: url,
         tokenId: payment.token_id ?? null,
-        expiredDate: payment.expired_date ?? null,
+        // Prefer the ISO `expired_datetime`; fall back to the compact
+        // `expired_date` ("YYYYMMDDHHmmss"). Always a clean ISO string or null —
+        // never an Invalid Date (TypeORM rejects NaN timestamps).
+        expiredDate: this.parseExpiry(payment.expired_datetime, payment.expired_date),
         raw: json,
       };
     } catch (e) {
@@ -116,6 +145,36 @@ export class DokuClient {
       this.logger.error(`DOKU checkout request error: ${(e as Error).message}`);
       throw new BadGatewayException('Could not reach DOKU checkout');
     }
+  }
+
+  /**
+   * Resolves the checkout expiry to an ISO string (or null). DOKU sandbox returns
+   * both `expired_datetime` (ISO, e.g. "2026-06-11T11:31:18Z") and `expired_date`
+   * (compact "YYYYMMDDHHmmss"). The ISO form is preferred; the compact form is the
+   * fallback. Anything unparseable yields null so an Invalid Date is never handed
+   * to the caller / TypeORM.
+   */
+  private parseExpiry(isoValue: unknown, compactValue: unknown): string | null {
+    if (typeof isoValue === 'string' && isoValue.trim() !== '') {
+      const d = new Date(isoValue);
+      if (!isNaN(d.getTime())) return d.toISOString();
+    }
+
+    if (typeof compactValue === 'string') {
+      const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(compactValue.trim());
+      if (m) {
+        const [, y, mo, day, h, min, s] = m;
+        // DOKU's compact `expired_date` carries no timezone and is wall-clock
+        // WIB (Asia/Jakarta, UTC+7) — verified against the paired ISO
+        // `expired_datetime` (e.g. 183118 WIB == 11:31:18Z). Treat the components
+        // as WIB and subtract the +7h offset to get the true UTC instant.
+        const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
+        const d = new Date(Date.UTC(+y, +mo - 1, +day, +h, +min, +s) - WIB_OFFSET_MS);
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+    }
+
+    return null;
   }
 
   private mockResult(params: CreateCheckoutParams, dueMinutes: number): CreateCheckoutResult {

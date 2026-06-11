@@ -24,4 +24,7 @@ export const envValidationSchema = Joi.object({
   DOKU_RETURN_URL: Joi.string().uri().optional(),
   // Local-only: bypass the outbound DOKU network call for smoke testing. Never true in prod.
   DOKU_MOCK: Joi.boolean().truthy('true').falsy('false').default(false),
+  // Local-only: emit temporary masked debug logs for the outbound checkout request
+  // (masked Client-Id + DOKU response body). Keep false outside local troubleshooting.
+  DOKU_DEBUG_LOGGING: Joi.boolean().truthy('true').falsy('false').default(false),
 });
