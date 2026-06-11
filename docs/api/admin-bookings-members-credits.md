@@ -312,6 +312,107 @@ Manually assigns a package to a member (front-desk sale or comp grant). Atomical
 
 ---
 
+## Admin Waitlist
+
+A waitlist entry is a booking row with `status: "waitlisted"` and a `waitlist_position`. Members join via `POST /member/schedules/:scheduleId/waitlist` (see [Member](./member.md#waitlist)). Admins view the queue and manually promote entries to confirmed bookings.
+
+---
+
+## GET /admin/schedules/:id/waitlist
+
+Returns the waitlist queue for a schedule, ordered by `waitlist_position` ascending.
+
+**Auth:** Bearer token  
+**Permission:** `bookings:read_all`
+
+**Path param:** `id` — schedule UUID.
+
+**Response `200`:** Array of waitlist entries with a member summary.
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "booking_code": "BK-ABC123",
+      "member": {
+        "id": "uuid",
+        "first_name": "Alice",
+        "last_name": "Tan",
+        "email": "alice@example.com"
+      },
+      "status": "waitlisted",
+      "waitlist_position": 1,
+      "credit_cost": 2,
+      "created_at": "2026-06-11T10:00:00.000Z"
+    }
+  ],
+  "meta": { "timestamp": "..." }
+}
+```
+
+Returns `[]` if the schedule has no waitlist entries. Returns `404` if the schedule does not exist.
+
+---
+
+## POST /admin/waitlist/:id/promote
+
+Promotes a waitlisted entry to a confirmed booking. This is the only way a waitlist entry becomes a booking — there is **no automatic promotion** when a confirmed booking is cancelled (planned for a later iteration).
+
+**Auth:** Bearer token  
+**Permission:** `bookings:update`
+
+**Path param:** `id` — the waitlist entry (booking) ID.
+
+**Request body:** None.
+
+**Response `200`:** The promoted entry, now `status: "confirmed"`.
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "booking_code": "BK-ABC123",
+    "schedule_id": "uuid",
+    "status": "confirmed",
+    "waitlist_position": 1,
+    "credit_cost": 2,
+    "created_at": "2026-06-11T10:00:00.000Z",
+    "schedule": {
+      "id": "uuid",
+      "start_time": "2026-06-15T09:00:00.000Z",
+      "end_time": "2026-06-15T10:00:00.000Z",
+      "status": "published"
+    }
+  },
+  "meta": { "timestamp": "..." }
+}
+```
+
+**Business rules:**
+- **Capacity required:** the schedule's confirmed count must be below `capacity`, checked atomically under a row lock. If the schedule is full, returns `409`.
+- **Credit required:** the member must have enough `credit_balance` to cover the entry's snapshotted `credit_cost`. If not, returns `400` and nothing is changed.
+- **On success:** the entry's status changes from `waitlisted` to `confirmed`, credit is debited (a `booking_debit` credit ledger entry is written), and the booking is linked to that ledger entry — exactly like a normal booking. A `credit_cost` of `0` (free class) confirms without any debit.
+- The schedule must still be `published`, `is_published = true`, and not yet started.
+
+**Errors:**
+
+| Code | Reason |
+|---|---|
+| 400 | Member has insufficient credit, or schedule not published / already started |
+| 404 | Waitlist entry or schedule not found |
+| 409 | Schedule is full, or the entry is not on the waitlist (e.g. already promoted) |
+
+**PowerShell sample:**
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:3001/admin/waitlist/<uuid>/promote" `
+  -Headers @{ Authorization = "Bearer $token" }
+```
+
+---
+
 ## FE integration notes
 
 - **Member detail page:** combine data from `GET /admin/members/:id`, `GET /admin/member-packages?member_id=<uuid>`, and `GET /admin/bookings?member_id=<uuid>` to build a full member profile view.
@@ -319,3 +420,4 @@ Manually assigns a package to a member (front-desk sale or comp grant). Atomical
 - **No-show vs cancel:** no-show never refunds credits; admin cancel may refund depending on timing. Show the refund eligibility deadline (`start_time - BOOKING_CANCELLATION_WINDOW_HOURS`) in the cancel confirmation dialog.
 - **Credit adjustment audit:** the `reason` field is mandatory — prompt staff to provide a meaningful reason. It appears in the credit ledger.
 - **Package assignment:** `payment_id: null` distinguishes manually assigned packages from DOKU-purchased ones. Use this to differentiate on the member profile UI.
+- **Waitlist:** show `GET /admin/schedules/:id/waitlist` on the schedule detail page. Enable a "Promote" action only when the schedule has a free seat (a confirmed booking was cancelled or capacity was raised). Promotion debits the member's credit, so warn staff if the member's balance is low — the call returns `400` rather than promoting if credit is insufficient. There is no automatic promotion on cancellation yet, so staff must promote manually.

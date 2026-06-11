@@ -230,6 +230,153 @@ Cancels the authenticated member's own booking. Refunds credit only if within th
 
 ---
 
+## Waitlist
+
+A waitlist entry is internally a booking row with `status: "waitlisted"` and a `waitlist_position`. **No credit is charged while waitlisted** — credit is only debited if/when an admin promotes the entry to a confirmed booking.
+
+---
+
+## POST /member/schedules/:scheduleId/waitlist
+
+Joins the waitlist for a **full** schedule. Use this when `POST /member/bookings` returns `409` (schedule full).
+
+**Auth:** Bearer token  
+**Permission:** `bookings:create`
+
+**Path param:** `scheduleId` — UUID of the schedule.
+
+**Request body:** None.
+
+**Response `201`:**
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "booking_code": "BK-ABC123",
+    "schedule_id": "uuid",
+    "status": "waitlisted",
+    "waitlist_position": 1,
+    "credit_cost": 2,
+    "created_at": "2026-06-11T10:00:00.000Z",
+    "schedule": {
+      "id": "uuid",
+      "start_time": "2026-06-15T09:00:00.000Z",
+      "end_time": "2026-06-15T10:00:00.000Z",
+      "status": "published"
+    }
+  },
+  "meta": { "timestamp": "..." }
+}
+```
+
+- `waitlist_position` is assigned atomically (next position in the queue for that schedule).
+- `credit_cost` is a snapshot of the class type's cost, recorded now and charged only on promotion.
+
+**Business rules:**
+1. Member must be `active`.
+2. Schedule must be `published`, `is_published = true`, and not yet started.
+3. **Waitlist is only for full schedules** — if the schedule still has open slots, the request is rejected with `400` (book directly instead).
+4. **No credit is debited** when joining the waitlist.
+5. One active entry per member per schedule — if the member already has a booking **or** a waitlist entry for this schedule, the request returns `409` (the same partial unique constraint that backs normal bookings).
+
+**Errors:**
+
+| Code | Reason |
+|---|---|
+| 400 | Schedule still has open slots, not published, or already started |
+| 403 | Member account not active |
+| 404 | Schedule not found |
+| 409 | Member already has an active booking or waitlist entry for this schedule |
+
+**PowerShell sample:**
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:3001/member/schedules/<uuid>/waitlist" `
+  -Headers @{ Authorization = "Bearer $token" }
+```
+
+---
+
+## GET /member/waitlist
+
+Returns the authenticated member's active waitlist entries, ordered by `waitlist_position` ascending.
+
+**Auth:** Bearer token  
+**Permission:** `bookings:read_own`
+
+**Response `200`:** Array of waitlist views (same shape as the `POST` response `data`). Returns `[]` if the member has no member row or no waitlist entries.
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "booking_code": "BK-ABC123",
+      "schedule_id": "uuid",
+      "status": "waitlisted",
+      "waitlist_position": 1,
+      "credit_cost": 2,
+      "created_at": "2026-06-11T10:00:00.000Z",
+      "schedule": {
+        "id": "uuid",
+        "start_time": "2026-06-15T09:00:00.000Z",
+        "end_time": "2026-06-15T10:00:00.000Z",
+        "status": "published"
+      }
+    }
+  ],
+  "meta": { "timestamp": "..." }
+}
+```
+
+Only entries with `status: "waitlisted"` are returned — promoted (now `confirmed`) and cancelled entries appear under `GET /member/bookings`, not here.
+
+---
+
+## DELETE /member/waitlist/:id
+
+Leaves the waitlist by cancelling the waitlisted booking row. No credit refund (nothing was charged).
+
+**Auth:** Bearer token  
+**Permission:** `bookings:cancel_own`
+
+**Path param:** `id` — the waitlist entry (booking) ID.
+
+**Response `200`:** The updated entry with `status: "cancelled"`.
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "booking_code": "BK-ABC123",
+    "schedule_id": "uuid",
+    "status": "cancelled",
+    "waitlist_position": 1,
+    "credit_cost": 2,
+    "created_at": "2026-06-11T10:00:00.000Z",
+    "schedule": { "id": "uuid", "start_time": "...", "end_time": "...", "status": "published" }
+  },
+  "meta": { "timestamp": "..." }
+}
+```
+
+**Business rules:**
+- Ownership is enforced — leaving another member's entry returns `403`.
+- Only entries still in `waitlisted` status can be left; a non-waitlisted entry returns `409`.
+- No credit is refunded (none was charged).
+
+**Errors:**
+
+| Code | Reason |
+|---|---|
+| 403 | Entry belongs to another member |
+| 404 | Waitlist entry not found |
+| 409 | Entry is not an active waitlist entry (e.g. already promoted/cancelled) |
+
+---
+
 ## GET /member/packages/my
 
 Returns all member packages (active and historical) owned by the authenticated member.
@@ -355,3 +502,4 @@ Nothing is persisted. Use this to build a checkout confirmation screen, then cal
 - **Booking gate:** check `available_slots` from `/public/schedules` before showing the book button, but the backend is the authoritative gate at booking time.
 - **Checkout flow:** call `/checkout` → redirect to `checkout_url` → after return URL lands, poll `/member/packages/my` until the new package appears with `status: active`. Do not assume the package is activated immediately on return — there may be a brief delay while the DOKU callback is processed.
 - **Cancellation window:** show the cancellation deadline to the member as `start_time - BOOKING_CANCELLATION_WINDOW_HOURS` (default 12 h). After this point the credit is forfeit.
+- **Waitlist:** when `POST /member/bookings` returns `409` (schedule full), offer a "Join waitlist" action that calls `POST /member/schedules/:scheduleId/waitlist`. The member is not charged while waitlisted. Show their position from `GET /member/waitlist`. Promotion to a confirmed booking is performed manually by an admin (and debits credit at that point) — there is no automatic promotion on someone else's cancellation yet, so the member should not expect to be auto-confirmed.

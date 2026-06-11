@@ -140,8 +140,8 @@ Query params accepted by `GET /admin/payments` and `GET /admin/doku-transactions
 
 - [Auth](./auth.md)
 - [Public](./public.md)
-- [Member](./member.md)
+- [Member](./member.md) — includes member waitlist (join / list / leave)
 - [Admin Master Data](./admin-master-data.md)
-- [Admin Schedules](./admin-schedules.md)
-- [Admin Bookings, Members & Credits](./admin-bookings-members-credits.md)
+- [Admin Schedules](./admin-schedules.md) — includes schedule waitlist queue
+- [Admin Bookings, Members & Credits](./admin-bookings-members-credits.md) — includes admin waitlist promotion
 - [Payments & DOKU](./payments-doku.md)

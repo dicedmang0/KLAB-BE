@@ -133,6 +133,16 @@ Cancels the schedule (sets `status = cancelled`). Does not hard-delete. Existing
 
 ---
 
+## GET /admin/schedules/:id/waitlist
+
+Returns the waitlist queue for a schedule (members who joined the waitlist when it was full), ordered by `waitlist_position`.
+
+**Permission:** `bookings:read_all`
+
+This endpoint and the related `POST /admin/waitlist/:id/promote` are documented in full under [Admin Bookings, Members & Credits → Admin Waitlist](./admin-bookings-members-credits.md#admin-waitlist), since promotion is a booking + credit operation.
+
+---
+
 ## Member Packages (Admin View)
 
 Base path: `/admin/member-packages`

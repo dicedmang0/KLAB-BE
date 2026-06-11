@@ -22,6 +22,7 @@ import { SchedulesModule } from './modules/schedules/schedules.module';
 import { MembersModule } from './modules/members/members.module';
 import { CreditsModule } from './modules/credits/credits.module';
 import { BookingsModule } from './modules/bookings/bookings.module';
+import { WaitlistModule } from './modules/waitlist/waitlist.module';
 import { MemberPackagesModule } from './modules/member-packages/member-packages.module';
 import { PublicModule } from './modules/public/public.module';
 import { PaymentsModule } from './modules/payments/payments.module';
@@ -53,6 +54,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     MembersModule,
     CreditsModule,
     BookingsModule,
+    WaitlistModule,
     MemberPackagesModule,
     PublicModule,
     DokuModule,
