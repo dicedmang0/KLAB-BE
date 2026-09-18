@@ -19,6 +19,7 @@ import { Member, MemberStatus } from '../members/entities/member.entity';
 import { CreditLedgerType } from '../credits/entities/credit-ledger.entity';
 import { CreditsService } from '../credits/credits.service';
 import { MembersService } from '../members/members.service';
+import { SoftLaunchService } from '../soft-launch/soft-launch.service';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -114,6 +115,7 @@ export class WaitlistService {
     private readonly schedulesRepo: Repository<Schedule>,
     private readonly creditsService: CreditsService,
     private readonly membersService: MembersService,
+    private readonly softLaunchService: SoftLaunchService,
   ) {}
 
   // ── Member: join ────────────────────────────────────────────────────────────
@@ -137,6 +139,10 @@ export class WaitlistService {
       });
       if (!schedule) throw new NotFoundException(`Schedule ${scheduleId} not found`);
       this.assertWaitlistable(schedule);
+
+      // Soft launch: in-window classes are exclusive to participants (403 otherwise).
+      // Nothing is charged on join either way; promotion re-evaluates the gate.
+      await this.softLaunchService.checkBooking(manager, userId, schedule.start_time);
 
       // Waitlist is only for full schedules — open seats should be booked directly.
       const confirmedCount = await manager.count(Booking, {
@@ -247,6 +253,10 @@ export class WaitlistService {
    * like a normal booking. Lock order schedule → booking → member matches the
    * booking-creation path to avoid deadlocks. Rejects with 400 if the member
    * cannot cover the credit cost.
+   *
+   * Soft launch: if the participant is eligible and both "now" and the class
+   * start are inside the window, promotion confirms with no credit requirement
+   * or debit (credit_cost=0, source=soft_launch). Otherwise the normal rules run.
    */
   async promote(bookingId: string): Promise<WaitlistView> {
     const promotedId = await this.dataSource.transaction(async (manager) => {
@@ -282,12 +292,22 @@ export class WaitlistService {
       });
       if (!member) throw new NotFoundException('Member not found');
 
-      const cost = locked.credit_cost;
+      const softLaunchBypass = await this.softLaunchService.checkBooking(
+        manager,
+        member.user_id,
+        schedule.start_time,
+      );
+
+      const cost = softLaunchBypass ? 0 : locked.credit_cost;
       if (cost > 0 && member.credit_balance < cost) {
         throw new BadRequestException('Member has insufficient credit balance to be promoted');
       }
 
       locked.status = BookingStatus.CONFIRMED;
+      if (softLaunchBypass) {
+        locked.credit_cost = 0;
+        locked.source = BookingSource.SOFT_LAUNCH;
+      }
       let saved = await manager.save(Booking, locked);
 
       if (cost > 0) {

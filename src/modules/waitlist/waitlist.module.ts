@@ -7,6 +7,7 @@ import { MemberWaitlistController } from './member-waitlist.controller';
 import { AdminWaitlistController } from './admin-waitlist.controller';
 import { CreditsModule } from '../credits/credits.module';
 import { MembersModule } from '../members/members.module';
+import { SoftLaunchModule } from '../soft-launch/soft-launch.module';
 
 /**
  * Waitlist sits on top of the existing bookings table (a waitlist entry is a
@@ -16,7 +17,12 @@ import { MembersModule } from '../members/members.module';
  * untouched — no regression to the normal booking/cancellation flows.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([Booking, Schedule]), CreditsModule, MembersModule],
+  imports: [
+    TypeOrmModule.forFeature([Booking, Schedule]),
+    CreditsModule,
+    MembersModule,
+    SoftLaunchModule,
+  ],
   controllers: [MemberWaitlistController, AdminWaitlistController],
   providers: [WaitlistService],
   exports: [WaitlistService],

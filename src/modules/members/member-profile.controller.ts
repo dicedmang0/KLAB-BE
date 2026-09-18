@@ -1,6 +1,7 @@
 import { Controller, Get, Request } from '@nestjs/common';
 import { MembersService } from './members.service';
 import { CreditsService } from '../credits/credits.service';
+import { SoftLaunchService } from '../soft-launch/soft-launch.service';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 
 @Controller('member')
@@ -8,6 +9,7 @@ export class MemberProfileController {
   constructor(
     private readonly membersService: MembersService,
     private readonly creditsService: CreditsService,
+    private readonly softLaunchService: SoftLaunchService,
   ) {}
 
   /**
@@ -17,8 +19,9 @@ export class MemberProfileController {
    */
   @Get('me')
   @Permissions('users:read_own')
-  getMe(@Request() req: any) {
-    return this.membersService.findMemberProfile(req.user.id);
+  async getMe(@Request() req: any) {
+    const profile = await this.membersService.findMemberProfile(req.user.id);
+    return { ...profile, soft_launch: await this.softLaunchService.viewFor(req.user.id) };
   }
 
   /**

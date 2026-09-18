@@ -19,7 +19,9 @@
     "migration:create": "typeorm-ts-node-commonjs migration:create src/database/migrations/migration",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/run-seeds.ts",
     "seed:waitlist-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-waitlist-smoke.ts",
-    "seed:phase-11e-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-phase-11e-smoke.ts"
+    "seed:phase-11e-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-phase-11e-smoke.ts",
+    "admin:create": "ts-node -r tsconfig-paths/register src/database/seeds/run-create-admin.ts",
+    "seed:soft-launch-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-soft-launch-smoke.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

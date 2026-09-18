@@ -62,11 +62,12 @@ Errors follow the NestJS `HttpExceptionFilter` shape:
 {
   "statusCode": 400,
   "message": "Human-readable description",
-  "error": "Bad Request",
   "timestamp": "2026-06-11T11:31:18.000Z",
   "path": "/member/bookings"
 }
 ```
+
+Some business-rule errors also carry a machine-readable `code` (e.g. `"code": "SOFT_LAUNCH_NOT_ELIGIBLE"`). Match on `code` when present rather than on `message`.
 
 Common status codes:
 
@@ -145,3 +146,4 @@ Query params accepted by `GET /admin/payments` and `GET /admin/doku-transactions
 - [Admin Schedules](./admin-schedules.md) — includes schedule waitlist queue
 - [Admin Bookings, Members & Credits](./admin-bookings-members-credits.md) — includes admin waitlist promotion
 - [Payments & DOKU](./payments-doku.md)
+- [Soft Launch](./soft-launch.md) — participant codes, the 20–25 Sept booking gate, admin allocation

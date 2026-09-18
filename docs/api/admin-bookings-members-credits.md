@@ -22,6 +22,7 @@ Returns all bookings across all members. Supports filtering.
 | `schedule_id` | UUID | Filter by schedule |
 | `member_id` | UUID | Filter by member |
 | `status` | enum | `pending_payment` \| `confirmed` \| `waitlisted` \| `cancelled` \| `completed` \| `no_show` |
+| `source` | enum | `member` \| `admin` \| `front_desk` \| `soft_launch` — use `soft_launch` to list bookings made under the soft-launch bypass (see [Soft Launch](./soft-launch.md)) |
 
 **Response `200`:** Array of bookings with shallow `member` and `schedule` relations, newest first.
 

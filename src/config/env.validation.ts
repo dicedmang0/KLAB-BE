@@ -27,4 +27,15 @@ export const envValidationSchema = Joi.object({
   // Local-only: emit temporary masked debug logs for the outbound checkout request
   // (masked Client-Id + DOKU response body). Keep false outside local troubleshooting.
   DOKU_DEBUG_LOGGING: Joi.boolean().truthy('true').falsy('false').default(false),
+
+  // Soft launch — participant-code-gated booking window (see src/config/soft-launch.config.ts).
+  // Dates must carry an explicit offset, e.g. 2026-09-20T00:00:00+07:00 (WIB). END is inclusive.
+  SOFT_LAUNCH_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  SOFT_LAUNCH_START: Joi.string()
+    .isoDate()
+    .when('SOFT_LAUNCH_ENABLED', { is: Joi.valid(true, 'true'), then: Joi.required() }),
+  SOFT_LAUNCH_END: Joi.string()
+    .isoDate()
+    .when('SOFT_LAUNCH_ENABLED', { is: Joi.valid(true, 'true'), then: Joi.required() }),
+  SOFT_LAUNCH_QUOTA: Joi.number().integer().min(1).default(80),
 });

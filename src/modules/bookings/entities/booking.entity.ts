@@ -29,6 +29,8 @@ export enum BookingSource {
   MEMBER = 'member',
   ADMIN = 'admin',
   FRONT_DESK = 'front_desk',
+  // Member booking made under the soft-launch bypass: no credit required or debited.
+  SOFT_LAUNCH = 'soft_launch',
 }
 
 @Entity('bookings')

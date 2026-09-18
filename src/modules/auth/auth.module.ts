@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { UsersModule } from '../users/users.module';
 import { RolesModule } from '../roles/roles.module';
+import { SoftLaunchModule } from '../soft-launch/soft-launch.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { RolesModule } from '../roles/roles.module';
     }),
     UsersModule,
     RolesModule,
+    SoftLaunchModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

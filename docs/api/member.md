@@ -23,13 +23,21 @@ Returns the authenticated member's own safe profile.
     "email": "alice@example.com",
     "phone": "+628123456789",
     "status": "active",
-    "credit_balance": 8
+    "credit_balance": 8,
+    "soft_launch": {
+      "enabled": true,
+      "active": true,
+      "eligible": true,
+      "participant_code": "KLAB-SL-7H3KQ9",
+      "allocated_at": "2026-09-18T04:12:00.000Z",
+      "quota_full": false
+    }
   },
   "meta": { "timestamp": "..." }
 }
 ```
 
-`notes` and internal fields are never exposed.
+`notes` and internal fields are never exposed. `soft_launch` is the same block as in `GET /auth/me` (see [Soft Launch](./soft-launch.md)); this endpoint still returns `404` until the member row exists, so use `/auth/me` right after registration.
 
 ---
 
@@ -184,13 +192,14 @@ Creates a confirmed booking for the authenticated member and debits credits atom
 4. Confirmed booking count must be below `schedule.capacity` (checked atomically under a row lock — no overbooking possible).
 5. Member must have enough `credit_balance` to cover the class type's `credit_cost`. A `credit_cost` of `0` means the class is free (no credit deducted).
 6. One active booking per member per schedule (unique constraint enforced at DB level).
+7. **Soft launch** (see [Soft Launch](./soft-launch.md)): when the request time **and** `schedule.start_time` both fall inside the soft-launch window, the class is exclusive to allocated participants. A participant is booked with `source: "soft_launch"`, `credit_cost: 0` and no credit check/debit; anyone else gets `403` with `code: "SOFT_LAUNCH_NOT_ELIGIBLE"`. Outside the window rules 1–6 apply unchanged. Never send `participant_code` in the body.
 
 **Errors:**
 
 | Code | Reason |
 |---|---|
 | 400 | Schedule not bookable, started, or insufficient credit |
-| 403 | Member account not active |
+| 403 | Member account not active, or `code: SOFT_LAUNCH_NOT_ELIGIBLE` (in-window class, user not a soft-launch participant) |
 | 404 | Schedule not found |
 | 409 | Schedule full or duplicate booking |
 
@@ -279,13 +288,14 @@ Joins the waitlist for a **full** schedule. Use this when `POST /member/bookings
 3. **Waitlist is only for full schedules** — if the schedule still has open slots, the request is rejected with `400` (book directly instead).
 4. **No credit is debited** when joining the waitlist.
 5. One active entry per member per schedule — if the member already has a booking **or** a waitlist entry for this schedule, the request returns `409` (the same partial unique constraint that backs normal bookings).
+6. **Soft launch:** during the window, the waitlist of an in-window class is open to participants only (`403 SOFT_LAUNCH_NOT_ELIGIBLE` otherwise). Admin promotion of a participant inside the window confirms with no credit debit. See [Soft Launch](./soft-launch.md).
 
 **Errors:**
 
 | Code | Reason |
 |---|---|
 | 400 | Schedule still has open slots, not published, or already started |
-| 403 | Member account not active |
+| 403 | Member account not active, or `code: SOFT_LAUNCH_NOT_ELIGIBLE` |
 | 404 | Schedule not found |
 | 409 | Member already has an active booking or waitlist entry for this schedule |
 
@@ -502,4 +512,5 @@ Nothing is persisted. Use this to build a checkout confirmation screen, then cal
 - **Booking gate:** check `available_slots` from `/public/schedules` before showing the book button, but the backend is the authoritative gate at booking time.
 - **Checkout flow:** call `/checkout` → redirect to `checkout_url` → after return URL lands, poll `/member/packages/my` until the new package appears with `status: active`. Do not assume the package is activated immediately on return — there may be a brief delay while the DOKU callback is processed.
 - **Cancellation window:** show the cancellation deadline to the member as `start_time - BOOKING_CANCELLATION_WINDOW_HOURS` (default 12 h). After this point the credit is forfeit.
+- **Soft launch:** show `participant_code` / eligibility from the `soft_launch` block; a `403` with `code: SOFT_LAUNCH_NOT_ELIGIBLE` on booking means the class is reserved for participants — do not retry as a credit booking. Details in [Soft Launch](./soft-launch.md).
 - **Waitlist:** when `POST /member/bookings` returns `409` (schedule full), offer a "Join waitlist" action that calls `POST /member/schedules/:scheduleId/waitlist`. The member is not charged while waitlisted. Show their position from `GET /member/waitlist`. Promotion to a confirmed booking is performed manually by an admin (and debits credit at that point) — there is no automatic promotion on someone else's cancellation yet, so the member should not expect to be auto-confirmed.

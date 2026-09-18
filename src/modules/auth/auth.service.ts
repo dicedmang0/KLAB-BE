@@ -14,6 +14,7 @@ import { JwtPayload } from './strategies/jwt.strategy';
 import { UsersService, SafeUser, toSafeUser } from '../users/users.service';
 import { RolesService } from '../roles/roles.service';
 import { User, UserStatus } from '../users/entities/user.entity';
+import { SoftLaunchService, SoftLaunchView } from '../soft-launch/soft-launch.service';
 
 const BCRYPT_ROUNDS = 12;
 const MEMBER_ROLE = 'member';
@@ -21,6 +22,7 @@ const MEMBER_ROLE = 'member';
 export interface AuthResult {
   access_token: string;
   user: SafeUser;
+  soft_launch: SoftLaunchView;
 }
 
 @Injectable()
@@ -29,6 +31,7 @@ export class AuthService {
     private usersService: UsersService,
     private rolesService: RolesService,
     private jwtService: JwtService,
+    private softLaunchService: SoftLaunchService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResult> {
@@ -57,6 +60,10 @@ export class AuthService {
       status: UserStatus.ACTIVE,
     });
 
+    // Soft launch: best-effort slot allocation while the allocation period is
+    // open and quota remains. Never fails registration (quota full -> eligible=false).
+    await this.softLaunchService.tryAllocateOnRegistration(user.id);
+
     return this.buildAuthResult(user, memberRole.name);
   }
 
@@ -80,15 +87,16 @@ export class AuthService {
     return this.buildAuthResult(user, user.role?.name ?? null);
   }
 
-  async getMe(userId: string): Promise<SafeUser> {
+  /** Own profile + soft-launch state (user-keyed, so available before any members row). */
+  async getMe(userId: string): Promise<SafeUser & { soft_launch: SoftLaunchView }> {
     const user = await this.usersService.findByIdWithRole(userId);
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    return user;
+    return { ...user, soft_launch: await this.softLaunchService.viewFor(userId) };
   }
 
-  private buildAuthResult(user: User, roleName: string | null): AuthResult {
+  private async buildAuthResult(user: User, roleName: string | null): Promise<AuthResult> {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
@@ -99,6 +107,7 @@ export class AuthService {
     return {
       access_token: this.jwtService.sign(payload),
       user: toSafeUser(user),
+      soft_launch: await this.softLaunchService.viewFor(user.id),
     };
   }
 }

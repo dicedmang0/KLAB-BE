@@ -15,6 +15,7 @@ import { Member, MemberStatus } from '../members/entities/member.entity';
 import { CreditLedgerType } from '../credits/entities/credit-ledger.entity';
 import { CreditsService } from '../credits/credits.service';
 import { MembersService } from '../members/members.service';
+import { SoftLaunchService } from '../soft-launch/soft-launch.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { ListBookingsDto } from './dto/list-bookings.dto';
 
@@ -36,6 +37,7 @@ export class BookingsService {
     private readonly creditsService: CreditsService,
     private readonly membersService: MembersService,
     private readonly config: ConfigService,
+    private readonly softLaunchService: SoftLaunchService,
   ) {}
 
   // ── Reads ───────────────────────────────────────────────────────────────
@@ -74,6 +76,7 @@ export class BookingsService {
     if (filter.schedule_id) where.schedule_id = filter.schedule_id;
     if (filter.member_id) where.member_id = filter.member_id;
     if (filter.status) where.status = filter.status;
+    if (filter.source) where.source = filter.source;
     return this.bookingsRepo.find({
       where,
       relations: ['member', 'schedule'],
@@ -103,6 +106,11 @@ export class BookingsService {
    *  - a partial unique index is the final backstop against duplicate active
    *    bookings for the same member + schedule.
    * Lock order is always schedule → member to avoid deadlocks.
+   *
+   * Soft launch: when both "now" and the class start fall inside the configured
+   * window, the class is exclusive to allocated participants (403 otherwise) and
+   * a participant is charged nothing. Outside the window the flow below is
+   * unchanged from the pre-soft-launch behaviour.
    */
   async createForMember(userId: string, dto: CreateBookingDto): Promise<Booking> {
     const bookingId = await this.dataSource.transaction(async (manager) => {
@@ -122,10 +130,18 @@ export class BookingsService {
       // 3. validate schedule is published and bookable
       this.assertBookable(schedule);
 
+      // 3b. soft-launch gate: true → bypass (charge nothing); false → normal rules;
+      //     throws 403 SOFT_LAUNCH_NOT_ELIGIBLE for non-participants on in-window classes.
+      const softLaunchBypass = await this.softLaunchService.checkBooking(
+        manager,
+        userId,
+        schedule.start_time,
+      );
+
       const classType = await manager.findOne(ClassType, {
         where: { id: schedule.class_type_id },
       });
-      const cost = classType?.credit_cost ?? 0;
+      const cost = softLaunchBypass ? 0 : (classType?.credit_cost ?? 0);
 
       // 4. lock member row (re-read under FOR UPDATE)
       const lockedMember = await manager.findOne(Member, {
@@ -154,7 +170,7 @@ export class BookingsService {
         schedule_id: schedule.id,
         status: BookingStatus.CONFIRMED,
         attendance_status: AttendanceStatus.NOT_CHECKED_IN,
-        source: BookingSource.MEMBER,
+        source: softLaunchBypass ? BookingSource.SOFT_LAUNCH : BookingSource.MEMBER,
         credit_cost: cost,
       });
 

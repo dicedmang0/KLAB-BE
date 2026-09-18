@@ -8,6 +8,7 @@ import appConfig from './config/app.config';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
 import dokuConfig from './config/doku.config';
+import softLaunchConfig from './config/soft-launch.config';
 import { envValidationSchema } from './config/env.validation';
 
 import { HealthModule } from './health/health.module';
@@ -27,6 +28,7 @@ import { MemberPackagesModule } from './modules/member-packages/member-packages.
 import { PublicModule } from './modules/public/public.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { DokuModule } from './modules/doku/doku.module';
+import { SoftLaunchModule } from './modules/soft-launch/soft-launch.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -34,7 +36,7 @@ import { RolesGuard } from './common/guards/roles.guard';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, databaseConfig, jwtConfig, dokuConfig],
+      load: [appConfig, databaseConfig, jwtConfig, dokuConfig, softLaunchConfig],
       validationSchema: envValidationSchema,
     }),
     TypeOrmModule.forRootAsync({
@@ -43,6 +45,7 @@ import { RolesGuard } from './common/guards/roles.guard';
         config.get<TypeOrmModuleOptions>('database') as TypeOrmModuleOptions,
     }),
     HealthModule,
+    SoftLaunchModule,
     AuthModule,
     UsersModule,
     RolesModule,
