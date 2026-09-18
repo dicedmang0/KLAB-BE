@@ -18,11 +18,19 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ? (exceptionResponse as any).message
         : (exceptionResponse ?? 'Internal server error');
 
+    // Optional machine-readable code (e.g. SOFT_LAUNCH_NOT_ELIGIBLE) — only present
+    // when the exception was thrown with `{ message, code }`.
+    const code =
+      exceptionResponse && typeof exceptionResponse === 'object'
+        ? (exceptionResponse as any).code
+        : undefined;
+
     response.status(status).json({
       statusCode: status,
       timestamp: new Date().toISOString(),
       path: request.url,
       message,
+      ...(code ? { code } : {}),
     });
   }
 }
