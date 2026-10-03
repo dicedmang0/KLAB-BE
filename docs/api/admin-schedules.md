@@ -79,8 +79,8 @@ Creates a new schedule. The `created_by` field is automatically set to the authe
 | `class_type_id` | UUID | Yes | must exist |
 | `instructor_id` | UUID | Yes | must exist |
 | `room_id` | UUID | Yes | must exist |
-| `start_time` | ISO 8601 datetime | Yes | — |
-| `end_time` | ISO 8601 datetime | Yes | must be after `start_time` |
+| `start_time` | ISO 8601 datetime (UTC) | Yes | 5-minute step in WIB (e.g. 18:30, 18:35) |
+| `end_time` | ISO 8601 datetime (UTC) | Yes | after `start_time`, same WIB calendar date, 5-minute step |
 | `capacity` | integer | Yes | min 1 |
 | `status` | enum | No | `draft` \| `published` \| `cancelled` \| `completed` |
 | `is_published` | boolean | No | default false |
@@ -90,7 +90,11 @@ Creates a new schedule. The `created_by` field is automatically set to the authe
 
 **Business rules:**
 - Members can only book schedules that are `status: published` **and** `is_published: true`.
-- Double-booking of a room or instructor at overlapping times is not currently enforced at the API layer — avoid it at the data entry level.
+- Times are stored in UTC; studio wall-clock is Asia/Jakarta (WIB, UTC+7). Admin selects 2026-10-22 18:30 WIB → `start_time: "2026-10-22T11:30:00.000Z"`.
+- `start_time`/`end_time` must fall on a 5-minute boundary (no seconds). Off-step values are rejected, never rounded → `400`, `code: SCHEDULE_INVALID_TIME_INCREMENT`.
+- `end_time` must be after `start_time` and on the same WIB date (no sessions past midnight) → `400`, `code: SCHEDULE_INVALID_TIME_RANGE`.
+- A room or instructor cannot hold two overlapping schedules. Overlap means `existing.start < new.end AND existing.end > new.start`, so back-to-back sessions (18:00–18:50 then 18:50–19:40) are allowed. Only `draft` and `published` schedules block a slot; `cancelled` and `completed` do not → `409`, `code: SCHEDULE_ROOM_CONFLICT` or `SCHEDULE_INSTRUCTOR_CONFLICT`, with a message such as `"Studio A is already used by Reformer Intermediate from 18:00–18:50 WIB."`
+- The check runs inside the create/update transaction with the room and instructor rows locked, so concurrent requests cannot both claim the same slot.
 
 **PowerShell sample:**
 
@@ -119,7 +123,10 @@ Updates a schedule. All body fields are optional.
 
 **Permission:** `schedules:update`
 
-**Response `200`:** Updated schedule object. **Errors:** `404`.
+**Response `200`:** Updated schedule object. **Errors:** `404`, plus the `400`/`409` codes above.
+
+- The 5-minute and same-day rules apply to `start_time`/`end_time` only when they are sent, so other fields of a legacy schedule can still be edited.
+- Conflicts are re-checked whenever the resulting status is `draft` or `published` (including reactivating a cancelled schedule). The schedule being edited never conflicts with itself.
 
 ---
 
