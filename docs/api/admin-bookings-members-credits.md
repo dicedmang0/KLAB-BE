@@ -131,6 +131,8 @@ Cancels any booking, bypassing the ownership check. Refund logic applies based o
 - Only `confirmed`, `pending_payment`, or `waitlisted` bookings can be cancelled.
 - Cancellation within `BOOKING_CANCELLATION_WINDOW_HOURS` (default 12 h) before `start_time` → credit refunded.
 - Cancellation after the window → credit **not** refunded.
+- Cancelling a `confirmed` booking frees a seat that is filled from the waitlist automatically, in the same transaction (see [Admin Waitlist](#admin-waitlist)). This happens whether or not the cancelling member is refunded.
+- Cancelling a `waitlisted` entry removes it from the queue (`waitlist_position` → `null`) and renumbers the remaining entries. It never promotes anyone.
 
 **PowerShell sample:**
 
@@ -315,13 +317,21 @@ Manually assigns a package to a member (front-desk sale or comp grant). Atomical
 
 ## Admin Waitlist
 
-A waitlist entry is a booking row with `status: "waitlisted"` and a `waitlist_position`. Members join via `POST /member/schedules/:scheduleId/waitlist` (see [Member](./member.md#waitlist)). Admins view the queue and manually promote entries to confirmed bookings.
+A waitlist entry is a booking row with `status: "waitlisted"` and a `waitlist_position`. Members join via `POST /member/schedules/:scheduleId/waitlist` (see [Member](./member.md#waitlist)). Active queue positions are always contiguous (`1..n`); entries that leave the queue (promoted or cancelled) get `waitlist_position: null` and the rest are renumbered.
+
+**Automatic fill.** When a `confirmed` booking is cancelled (member or admin), the freed seats are filled in the same transaction:
+- Candidates are evaluated in queue order (`waitlist_position`, then join time).
+- A candidate who is ineligible right now is skipped and stays waitlisted for a later run: account not `active`, insufficient credit, or (inside the soft-launch window) not a soft-launch participant.
+- Filling continues until the class is full or no eligible candidate remains, so two freed seats can promote two members.
+- Credit is checked and debited only when a member is actually promoted. Inside the soft-launch window an eligible participant is promoted free (`credit_cost: 0`, `source: "soft_launch"`); otherwise normal credit rules apply.
+- No fill happens for a class that has started, is cancelled, or is unpublished, and none for no-shows, schedule cancellation, or capacity increases.
+- Members are not notified; they see the confirmed booking on their next load.
 
 ---
 
 ## GET /admin/schedules/:id/waitlist
 
-Returns the waitlist queue for a schedule, ordered by `waitlist_position` ascending.
+Returns the waitlist queue for a schedule, ordered by `waitlist_position` ascending (contiguous `1..n`).
 
 **Auth:** Bearer token  
 **Permission:** `bookings:read_all`
@@ -358,7 +368,7 @@ Returns `[]` if the schedule has no waitlist entries. Returns `404` if the sched
 
 ## POST /admin/waitlist/:id/promote
 
-Promotes a waitlisted entry to a confirmed booking. This is the only way a waitlist entry becomes a booking — there is **no automatic promotion** when a confirmed booking is cancelled (planned for a later iteration).
+Promotes one waitlisted entry to a confirmed booking. This is an operational fallback: seats freed by a confirmed cancellation are already filled automatically. It uses the same eligibility rules as the automatic fill and cannot skip an earlier **eligible** member in the queue.
 
 **Auth:** Bearer token  
 **Permission:** `bookings:update`
@@ -376,7 +386,7 @@ Promotes a waitlisted entry to a confirmed booking. This is the only way a waitl
     "booking_code": "BK-ABC123",
     "schedule_id": "uuid",
     "status": "confirmed",
-    "waitlist_position": 1,
+    "waitlist_position": null,
     "credit_cost": 2,
     "created_at": "2026-06-11T10:00:00.000Z",
     "schedule": {
@@ -392,17 +402,21 @@ Promotes a waitlisted entry to a confirmed booking. This is the only way a waitl
 
 **Business rules:**
 - **Capacity required:** the schedule's confirmed count must be below `capacity`, checked atomically under a row lock. If the schedule is full, returns `409`.
+- **Queue priority:** the entry must be the first member in queue order who is eligible right now. Earlier members who are currently ineligible may be passed over; an earlier eligible member returns `409` with `code: "WAITLIST_QUEUE_PRIORITY"`.
+- **Active account required:** a member whose status is not `active` returns `400`.
 - **Credit required:** the member must have enough `credit_balance` to cover the entry's snapshotted `credit_cost`. If not, returns `400` and nothing is changed.
-- **On success:** the entry's status changes from `waitlisted` to `confirmed`, credit is debited (a `booking_debit` credit ledger entry is written), and the booking is linked to that ledger entry — exactly like a normal booking. A `credit_cost` of `0` (free class) confirms without any debit.
+- **Soft launch:** inside the window, a participant is promoted free (`credit_cost: 0`, `source: "soft_launch"`) and a non-participant returns `403` with `code: "SOFT_LAUNCH_NOT_ELIGIBLE"`. Outside the window normal credit rules apply.
+- **On success:** the entry's status changes from `waitlisted` to `confirmed`, `waitlist_position` becomes `null`, the remaining queue is renumbered, and credit is debited (a `booking_debit` credit ledger entry is written) with the booking linked to that ledger entry — exactly like a normal booking. A cost of `0` confirms without any debit.
 - The schedule must still be `published`, `is_published = true`, and not yet started.
 
 **Errors:**
 
 | Code | Reason |
 |---|---|
-| 400 | Member has insufficient credit, or schedule not published / already started |
+| 400 | Member has insufficient credit, member account not active, or schedule not published / already started |
+| 403 | `code: SOFT_LAUNCH_NOT_ELIGIBLE` — in-window class, member is not a soft-launch participant |
 | 404 | Waitlist entry or schedule not found |
-| 409 | Schedule is full, or the entry is not on the waitlist (e.g. already promoted) |
+| 409 | Schedule is full, the entry is not on the waitlist (e.g. already promoted), or `code: WAITLIST_QUEUE_PRIORITY` — an earlier eligible member is ahead |
 
 **PowerShell sample:**
 
@@ -421,4 +435,4 @@ Invoke-RestMethod -Method Post `
 - **No-show vs cancel:** no-show never refunds credits; admin cancel may refund depending on timing. Show the refund eligibility deadline (`start_time - BOOKING_CANCELLATION_WINDOW_HOURS`) in the cancel confirmation dialog.
 - **Credit adjustment audit:** the `reason` field is mandatory — prompt staff to provide a meaningful reason. It appears in the credit ledger.
 - **Package assignment:** `payment_id: null` distinguishes manually assigned packages from DOKU-purchased ones. Use this to differentiate on the member profile UI.
-- **Waitlist:** show `GET /admin/schedules/:id/waitlist` on the schedule detail page. Enable a "Promote" action only when the schedule has a free seat (a confirmed booking was cancelled or capacity was raised). Promotion debits the member's credit, so warn staff if the member's balance is low — the call returns `400` rather than promoting if credit is insufficient. There is no automatic promotion on cancellation yet, so staff must promote manually.
+- **Waitlist:** show `GET /admin/schedules/:id/waitlist` on the schedule detail page. Seats freed by a confirmed cancellation are filled automatically, so refetch bookings and the waitlist after a cancel. Manual "Promote" remains a fallback (e.g. after capacity was raised); the backend rejects queue-cutting with `WAITLIST_QUEUE_PRIORITY`. Do not promise a credit debit in confirmation copy — eligible soft-launch promotions are free.

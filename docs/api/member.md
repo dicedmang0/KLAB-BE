@@ -235,13 +235,14 @@ Cancels the authenticated member's own booking. Refunds credit only if within th
 - Only `confirmed`, `pending_payment`, or `waitlisted` bookings can be cancelled.
 - Cancellation within `BOOKING_CANCELLATION_WINDOW_HOURS` (default 12 h) before `start_time` → credit is refunded.
 - Cancellation after the window → credit is **not** refunded (late cancellation forfeiture).
+- Cancelling a `confirmed` booking frees the seat for the next eligible waitlisted member automatically (see [Waitlist](#waitlist)).
 - No-show bookings cannot be retroactively cancelled.
 
 ---
 
 ## Waitlist
 
-A waitlist entry is internally a booking row with `status: "waitlisted"` and a `waitlist_position`. **No credit is charged while waitlisted** — credit is only debited if/when an admin promotes the entry to a confirmed booking.
+A waitlist entry is internally a booking row with `status: "waitlisted"` and a `waitlist_position`. **No credit is charged while waitlisted** — credit is only debited if/when the entry is promoted to a confirmed booking. Promotion happens automatically when a confirmed seat is cancelled (first eligible member in queue order; members who cannot be promoted right now, e.g. insufficient credit, stay waitlisted and keep their place), or by an admin as a fallback. There is no notification yet — a promoted entry appears as a confirmed booking under `GET /member/bookings`.
 
 ---
 
@@ -279,7 +280,7 @@ Joins the waitlist for a **full** schedule. Use this when `POST /member/bookings
 }
 ```
 
-- `waitlist_position` is assigned atomically (next position in the queue for that schedule).
+- `waitlist_position` is assigned atomically as the back of the active queue. Active positions are always contiguous (`1..n`) and move up as members ahead are promoted or leave.
 - `credit_cost` is a snapshot of the class type's cost, recorded now and charged only on promotion.
 
 **Business rules:**
@@ -288,7 +289,7 @@ Joins the waitlist for a **full** schedule. Use this when `POST /member/bookings
 3. **Waitlist is only for full schedules** — if the schedule still has open slots, the request is rejected with `400` (book directly instead).
 4. **No credit is debited** when joining the waitlist.
 5. One active entry per member per schedule — if the member already has a booking **or** a waitlist entry for this schedule, the request returns `409` (the same partial unique constraint that backs normal bookings).
-6. **Soft launch:** during the window, the waitlist of an in-window class is open to participants only (`403 SOFT_LAUNCH_NOT_ELIGIBLE` otherwise). Admin promotion of a participant inside the window confirms with no credit debit. See [Soft Launch](./soft-launch.md).
+6. **Soft launch:** during the window, the waitlist of an in-window class is open to participants only (`403 SOFT_LAUNCH_NOT_ELIGIBLE` otherwise). Promotion (automatic or admin) of a participant inside the window confirms with no credit debit; once the window has ended, normal credit rules apply at promotion time. See [Soft Launch](./soft-launch.md).
 
 **Errors:**
 
@@ -363,7 +364,7 @@ Leaves the waitlist by cancelling the waitlisted booking row. No credit refund (
     "booking_code": "BK-ABC123",
     "schedule_id": "uuid",
     "status": "cancelled",
-    "waitlist_position": 1,
+    "waitlist_position": null,
     "credit_cost": 2,
     "created_at": "2026-06-11T10:00:00.000Z",
     "schedule": { "id": "uuid", "start_time": "...", "end_time": "...", "status": "published" }
@@ -375,6 +376,7 @@ Leaves the waitlist by cancelling the waitlisted booking row. No credit refund (
 **Business rules:**
 - Ownership is enforced — leaving another member's entry returns `403`.
 - Only entries still in `waitlisted` status can be left; a non-waitlisted entry returns `409`.
+- The left entry gets `waitlist_position: null` and the remaining entries are renumbered. Leaving never promotes anyone.
 - No credit is refunded (none was charged).
 
 **Errors:**

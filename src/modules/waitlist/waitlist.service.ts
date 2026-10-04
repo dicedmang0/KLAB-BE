@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import {
   Booking,
   BookingStatus,
@@ -15,11 +15,10 @@ import {
 } from '../bookings/entities/booking.entity';
 import { Schedule, ScheduleStatus } from '../schedules/entities/schedule.entity';
 import { ClassType } from '../class-types/entities/class-type.entity';
-import { Member, MemberStatus } from '../members/entities/member.entity';
-import { CreditLedgerType } from '../credits/entities/credit-ledger.entity';
-import { CreditsService } from '../credits/credits.service';
+import { MemberStatus } from '../members/entities/member.entity';
 import { MembersService } from '../members/members.service';
 import { SoftLaunchService } from '../soft-launch/soft-launch.service';
+import { WaitlistPromotionService } from '../bookings/waitlist-promotion.service';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -102,8 +101,10 @@ function toAdminEntryView(b: Booking): AdminWaitlistEntryView {
  * index UX_bookings_active_member_schedule guarantees a member cannot hold both an
  * active booking and a waitlist entry for the same schedule.
  *
- * This service never mutates the normal booking-creation or cancellation flows in
- * BookingsService — promotion here is manual/admin-only.
+ * Active positions are always contiguous (1..n): every queue change renumbers.
+ * Seats freed by a confirmed cancellation are filled automatically (see
+ * BookingsService); the admin promote endpoint is an operational fallback that
+ * shares the same eligibility rules and cannot skip an earlier eligible member.
  */
 @Injectable()
 export class WaitlistService {
@@ -113,18 +114,18 @@ export class WaitlistService {
     private readonly bookingsRepo: Repository<Booking>,
     @InjectRepository(Schedule)
     private readonly schedulesRepo: Repository<Schedule>,
-    private readonly creditsService: CreditsService,
     private readonly membersService: MembersService,
     private readonly softLaunchService: SoftLaunchService,
+    private readonly promotion: WaitlistPromotionService,
   ) {}
 
   // ── Member: join ────────────────────────────────────────────────────────────
 
   /**
-   * Joins the waitlist for a full schedule. Mirrors the booking-creation lock
-   * order (schedule FOR UPDATE) so position assignment is serialised per schedule.
-   * A member already active (booked or waitlisted) on the schedule is rejected by
-   * the partial unique index.
+   * Joins the waitlist for a full schedule. The schedule lock serialises
+   * position assignment; the new entry goes to the back of the (renumbered)
+   * active queue. A member already active (booked or waitlisted) on the schedule
+   * is rejected by the partial unique index.
    */
   async joinWaitlist(userId: string, scheduleId: string): Promise<WaitlistView> {
     const bookingId = await this.dataSource.transaction(async (manager) => {
@@ -133,21 +134,15 @@ export class WaitlistService {
         throw new ForbiddenException('Member account is not active');
       }
 
-      const schedule = await manager.findOne(Schedule, {
-        where: { id: scheduleId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!schedule) throw new NotFoundException(`Schedule ${scheduleId} not found`);
-      this.assertWaitlistable(schedule);
+      const schedule = await this.promotion.lockSchedule(manager, scheduleId);
+      this.promotion.assertPromotable(schedule);
 
       // Soft launch: in-window classes are exclusive to participants (403 otherwise).
       // Nothing is charged on join either way; promotion re-evaluates the gate.
       await this.softLaunchService.checkBooking(manager, userId, schedule.start_time);
 
       // Waitlist is only for full schedules — open seats should be booked directly.
-      const confirmedCount = await manager.count(Booking, {
-        where: { schedule_id: schedule.id, status: BookingStatus.CONFIRMED },
-      });
+      const confirmedCount = await this.promotion.countConfirmed(manager, schedule.id);
       if (confirmedCount < schedule.capacity) {
         throw new BadRequestException(
           'Schedule still has open slots — book directly instead of joining the waitlist',
@@ -159,7 +154,8 @@ export class WaitlistService {
       });
       const cost = classType?.credit_cost ?? 0;
 
-      const nextPosition = await this.nextWaitlistPosition(manager, schedule.id);
+      // Back of the active queue; historical promoted/cancelled rows don't count.
+      const queueLength = await this.promotion.normalizePositions(manager, schedule.id);
 
       const booking = manager.create(Booking, {
         booking_code: this.generateBookingCode(),
@@ -169,7 +165,7 @@ export class WaitlistService {
         attendance_status: AttendanceStatus.NOT_CHECKED_IN,
         source: BookingSource.MEMBER,
         credit_cost: cost,
-        waitlist_position: nextPosition,
+        waitlist_position: queueLength + 1,
       });
 
       let saved: Booking;
@@ -200,8 +196,9 @@ export class WaitlistService {
   // ── Member: leave ─────────────────────────────────────────────────────────────
 
   /**
-   * Leaves the waitlist (cancels the waitlisted booking row). No credit refund —
-   * nothing was charged while waitlisted.
+   * Leaves the waitlist (cancels the waitlisted booking row) and renumbers the
+   * rest of the queue. No credit refund — nothing was charged while waitlisted.
+   * No promotion: no confirmed seat was released.
    */
   async leaveWaitlist(userId: string, bookingId: string): Promise<WaitlistView> {
     await this.dataSource.transaction(async (manager) => {
@@ -214,6 +211,8 @@ export class WaitlistService {
         throw new ForbiddenException('You can only leave your own waitlist');
       }
 
+      // Canonical lock order: schedule → booking.
+      await this.promotion.lockSchedule(manager, booking.schedule_id);
       const locked = await manager.findOne(Booking, {
         where: { id: bookingId },
         lock: { mode: 'pessimistic_write' },
@@ -225,7 +224,10 @@ export class WaitlistService {
 
       locked.status = BookingStatus.CANCELLED;
       locked.cancelled_at = new Date();
+      locked.waitlist_position = null;
       await manager.save(Booking, locked);
+
+      await this.promotion.normalizePositions(manager, locked.schedule_id);
     });
 
     return this.loadView(bookingId);
@@ -240,7 +242,7 @@ export class WaitlistService {
     const rows = await this.bookingsRepo.find({
       where: { schedule_id: scheduleId, status: BookingStatus.WAITLISTED },
       relations: ['member'],
-      order: { waitlist_position: 'ASC' },
+      order: { waitlist_position: 'ASC', created_at: 'ASC', id: 'ASC' },
     });
     return rows.map(toAdminEntryView);
   }
@@ -248,82 +250,23 @@ export class WaitlistService {
   // ── Admin: promote ────────────────────────────────────────────────────────────
 
   /**
-   * Promotes a waitlisted booking to confirmed, atomically and only if capacity
-   * allows. Debits the member's credit (the snapshot taken at join time) exactly
-   * like a normal booking. Lock order schedule → booking → member matches the
-   * booking-creation path to avoid deadlocks. Rejects with 400 if the member
-   * cannot cover the credit cost.
-   *
-   * Soft launch: if the participant is eligible and both "now" and the class
-   * start are inside the window, promotion confirms with no credit requirement
-   * or debit (credit_cost=0, source=soft_launch). Otherwise the normal rules run.
+   * Operational fallback for promoting one entry. Uses the same eligibility
+   * rules as automatic fill (active account, credit, soft launch) and only
+   * succeeds when the entry is the first eligible member in queue order —
+   * otherwise 409 WAITLIST_QUEUE_PRIORITY. 409 when full, 400 when the entry is
+   * itself ineligible (403 for soft-launch ineligibility).
    */
   async promote(bookingId: string): Promise<WaitlistView> {
-    const promotedId = await this.dataSource.transaction(async (manager) => {
+    await this.dataSource.transaction(async (manager) => {
       const entry = await manager.findOne(Booking, { where: { id: bookingId } });
       if (!entry) throw new NotFoundException(`Waitlist entry ${bookingId} not found`);
 
-      const schedule = await manager.findOne(Schedule, {
-        where: { id: entry.schedule_id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!schedule) throw new NotFoundException(`Schedule ${entry.schedule_id} not found`);
-      this.assertWaitlistable(schedule);
-
-      const locked = await manager.findOne(Booking, {
-        where: { id: bookingId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!locked) throw new NotFoundException(`Waitlist entry ${bookingId} not found`);
-      if (locked.status !== BookingStatus.WAITLISTED) {
-        throw new ConflictException(`Booking is not on the waitlist (status: ${locked.status})`);
-      }
-
-      const confirmedCount = await manager.count(Booking, {
-        where: { schedule_id: schedule.id, status: BookingStatus.CONFIRMED },
-      });
-      if (confirmedCount >= schedule.capacity) {
-        throw new ConflictException('Schedule is full');
-      }
-
-      const member = await manager.findOne(Member, {
-        where: { id: locked.member_id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!member) throw new NotFoundException('Member not found');
-
-      const softLaunchBypass = await this.softLaunchService.checkBooking(
-        manager,
-        member.user_id,
-        schedule.start_time,
-      );
-
-      const cost = softLaunchBypass ? 0 : locked.credit_cost;
-      if (cost > 0 && member.credit_balance < cost) {
-        throw new BadRequestException('Member has insufficient credit balance to be promoted');
-      }
-
-      locked.status = BookingStatus.CONFIRMED;
-      if (softLaunchBypass) {
-        locked.credit_cost = 0;
-        locked.source = BookingSource.SOFT_LAUNCH;
-      }
-      let saved = await manager.save(Booking, locked);
-
-      if (cost > 0) {
-        const ledger = await this.creditsService.applyDelta(manager, member, -cost, {
-          type: CreditLedgerType.BOOKING_DEBIT,
-          bookingId: saved.id,
-          reason: `Waitlist promotion ${saved.booking_code}`,
-        });
-        saved.credit_ledger_id = ledger.id;
-        saved = await manager.save(Booking, saved);
-      }
-
-      return saved.id;
+      const schedule = await this.promotion.lockSchedule(manager, entry.schedule_id);
+      const locked = await this.promotion.lockQueueAndMembers(manager, schedule);
+      await this.promotion.promoteSpecific(manager, locked, bookingId);
     });
 
-    return this.loadView(promotedId);
+    return this.loadView(bookingId);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -335,32 +278,6 @@ export class WaitlistService {
     });
     if (!booking) throw new NotFoundException(`Waitlist entry ${id} not found`);
     return toWaitlistView(booking);
-  }
-
-  /**
-   * Next position = highest position among currently-waitlisted rows for the
-   * schedule + 1. Promoted/left rows leave their status (no longer 'waitlisted')
-   * so they drop out of this MAX; gaps are acceptable since position is only an
-   * ordering hint and is never uniqueness-constrained.
-   */
-  private async nextWaitlistPosition(manager: EntityManager, scheduleId: string): Promise<number> {
-    const res = await manager
-      .createQueryBuilder(Booking, 'b')
-      .select('MAX(b.waitlist_position)', 'max')
-      .where('b.schedule_id = :scheduleId', { scheduleId })
-      .andWhere('b.status = :status', { status: BookingStatus.WAITLISTED })
-      .getRawOne<{ max: number | string | null }>();
-    const max = res?.max == null ? 0 : Number(res.max);
-    return max + 1;
-  }
-
-  private assertWaitlistable(schedule: Schedule): void {
-    if (schedule.status !== ScheduleStatus.PUBLISHED || !schedule.is_published) {
-      throw new BadRequestException('Schedule is not open for booking');
-    }
-    if (new Date(schedule.start_time).getTime() <= Date.now()) {
-      throw new BadRequestException('Schedule has already started');
-    }
   }
 
   private generateBookingCode(): string {

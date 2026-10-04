@@ -17,6 +17,7 @@ import { CreditsService } from '../credits/credits.service';
 import { MembersService } from '../members/members.service';
 import { SoftLaunchService } from '../soft-launch/soft-launch.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { WaitlistPromotionService } from './waitlist-promotion.service';
 import { ListBookingsDto } from './dto/list-bookings.dto';
 
 const CANCELLABLE_STATUSES: BookingStatus[] = [
@@ -38,6 +39,7 @@ export class BookingsService {
     private readonly membersService: MembersService,
     private readonly config: ConfigService,
     private readonly softLaunchService: SoftLaunchService,
+    private readonly waitlistPromotion: WaitlistPromotionService,
   ) {}
 
   // ── Reads ───────────────────────────────────────────────────────────────
@@ -218,6 +220,15 @@ export class BookingsService {
    * Cancels a booking in one transaction. Refunds credit only when the request
    * is inside the cancellation window; late cancellations forfeit the credit.
    * Existing ledger rows are never mutated — a refund adds a new positive row.
+   *
+   * A cancelled CONFIRMED booking frees a seat, which is filled from the
+   * waitlist in the same transaction (ineligible candidates are skipped, never
+   * rolling back this cancellation). A cancelled WAITLISTED entry leaves the
+   * queue and the remaining positions are renumbered.
+   *
+   * Lock order (shared with booking creation and promotion): schedule →
+   * booking rows → member rows, so a concurrent cancel/promote of the same
+   * entry is serialised instead of deadlocking.
    */
   private async cancelInternal(
     bookingId: string,
@@ -225,9 +236,10 @@ export class BookingsService {
     opts: { actorUserId: string; requireOwnership: boolean },
   ): Promise<Booking> {
     await this.dataSource.transaction(async (manager) => {
+      // Unlocked read: ownership check and which schedule to lock first.
       const booking = await manager.findOne(Booking, {
         where: { id: bookingId },
-        relations: ['member', 'schedule'],
+        relations: ['member'],
       });
       if (!booking) throw new NotFoundException(`Booking ${bookingId} not found`);
 
@@ -235,14 +247,10 @@ export class BookingsService {
         throw new ForbiddenException('You can only cancel your own bookings');
       }
 
-      // Lock member (for the refund) then re-read the booking FOR UPDATE so a
-      // concurrent cancel of the same booking is serialised and idempotent.
-      const member = await manager.findOne(Member, {
-        where: { id: booking.member_id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!member) throw new NotFoundException('Member not found');
+      const schedule = await this.waitlistPromotion.lockSchedule(manager, booking.schedule_id);
 
+      // Re-read FOR UPDATE so a concurrent cancel of the same booking is
+      // serialised and idempotent.
       const locked = await manager.findOne(Booking, {
         where: { id: bookingId },
         lock: { mode: 'pessimistic_write' },
@@ -253,10 +261,28 @@ export class BookingsService {
         throw new ConflictException(`Booking cannot be cancelled (status: ${locked.status})`);
       }
 
-      const refundEligible = this.isWithinCancellationWindow(booking.schedule.start_time);
+      const wasConfirmed = locked.status === BookingStatus.CONFIRMED;
+      const wasWaitlisted = locked.status === BookingStatus.WAITLISTED;
+
+      // Queue rows are locked only when the queue changes; candidate members only
+      // when a seat is freed. Members are always one ascending-id batch.
+      const queue =
+        wasConfirmed || wasWaitlisted
+          ? await this.waitlistPromotion.lockQueue(manager, schedule.id)
+          : [];
+      const members = await this.waitlistPromotion.lockMembers(manager, [
+        locked.member_id,
+        ...(wasConfirmed ? queue.map((b) => b.member_id) : []),
+      ]);
+      const ctx = { schedule, queue, members };
+      const member = members.get(locked.member_id);
+      if (!member) throw new NotFoundException('Member not found');
+
+      const refundEligible = this.isWithinCancellationWindow(schedule.start_time);
 
       locked.status = BookingStatus.CANCELLED;
       locked.cancelled_at = new Date();
+      locked.waitlist_position = null;
       await manager.save(Booking, locked);
 
       if (refundEligible && locked.credit_cost > 0 && locked.credit_ledger_id) {
@@ -265,6 +291,12 @@ export class BookingsService {
           bookingId: locked.id,
           reason: reason ?? `Refund for cancelled booking ${locked.booking_code}`,
         });
+      }
+
+      if (wasConfirmed) {
+        await this.waitlistPromotion.fillOpenSeats(manager, ctx);
+      } else if (wasWaitlisted) {
+        await this.waitlistPromotion.normalizePositions(manager, schedule.id);
       }
     });
 
