@@ -21,7 +21,8 @@
     "seed:waitlist-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-waitlist-smoke.ts",
     "seed:phase-11e-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-phase-11e-smoke.ts",
     "admin:create": "ts-node -r tsconfig-paths/register src/database/seeds/run-create-admin.ts",
-    "seed:soft-launch-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-soft-launch-smoke.ts"
+    "seed:soft-launch-smoke": "ts-node -r tsconfig-paths/register src/database/seeds/run-soft-launch-smoke.ts",
+    "members:backfill": "ts-node -r tsconfig-paths/register src/database/seeds/run-members-backfill.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

@@ -37,7 +37,7 @@ Returns the authenticated member's own safe profile.
 }
 ```
 
-`notes` and internal fields are never exposed. `soft_launch` is the same block as in `GET /auth/me` (see [Soft Launch](./soft-launch.md)); this endpoint still returns `404` until the member row exists, so use `/auth/me` right after registration.
+`notes` and internal fields are never exposed. `soft_launch` is the same block as in `GET /auth/me` (see [Soft Launch](./soft-launch.md)); registration creates the member row, so this endpoint works right after registration. It returns `404` only for an older account that has no member row yet; `/auth/me` works for every account.
 
 ---
 

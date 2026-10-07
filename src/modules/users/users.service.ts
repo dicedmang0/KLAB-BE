@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 
 /** User shape returned to clients — never includes password_hash. */
@@ -48,8 +48,9 @@ export class UsersService {
     });
   }
 
-  async create(data: Partial<User>): Promise<User> {
-    const user = this.usersRepo.create(data);
-    return this.usersRepo.save(user);
+  /** Pass `manager` to insert inside the caller's transaction. */
+  async create(data: Partial<User>, manager?: EntityManager): Promise<User> {
+    const repo = manager ? manager.getRepository(User) : this.usersRepo;
+    return repo.save(repo.create(data));
   }
 }

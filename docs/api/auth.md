@@ -10,6 +10,15 @@ All auth endpoints are **public** (no JWT required).
 
 Creates a new user account and returns a JWT. Every self-registered user receives the `member` role automatically.
 
+The `users` row and its linked `members` profile are created in **one transaction** — either both exist or neither does — so a new member appears in Admin Members immediately, before any booking. Soft-launch allocation runs afterwards, best-effort, and never affects the account.
+
+Accounts registered before this change may have no `members` row. Booking, waitlist join, package checkout and purchase-intent still create it on first use (`ensureForUser`), and an operator can repair a registration date in bulk:
+
+```
+npm run members:backfill -- --date=YYYY-MM-DD --dry-run   # list affected users (WIB date), no writes
+npm run members:backfill -- --date=YYYY-MM-DD --apply     # create the missing member profiles
+```
+
 **Auth:** None
 
 **Request body:**
@@ -149,7 +158,7 @@ Returns the currently authenticated user's safe profile.
 }
 ```
 
-`soft_launch` is user-keyed, so it is available here immediately after registration — before any member row exists. `participant_code` is only ever the authenticated user's own code. See [Soft Launch](./soft-launch.md).
+`soft_launch` is user-keyed, so it does not depend on the member row. `participant_code` is only ever the authenticated user's own code. See [Soft Launch](./soft-launch.md).
 
 **PowerShell sample:**
 

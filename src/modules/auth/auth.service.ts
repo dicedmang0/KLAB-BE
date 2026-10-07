@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { DataSource } from 'typeorm';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
@@ -15,6 +16,7 @@ import { UsersService, SafeUser, toSafeUser } from '../users/users.service';
 import { RolesService } from '../roles/roles.service';
 import { User, UserStatus } from '../users/entities/user.entity';
 import { SoftLaunchService, SoftLaunchView } from '../soft-launch/soft-launch.service';
+import { MembersService } from '../members/members.service';
 
 const BCRYPT_ROUNDS = 12;
 const MEMBER_ROLE = 'member';
@@ -32,6 +34,8 @@ export class AuthService {
     private rolesService: RolesService,
     private jwtService: JwtService,
     private softLaunchService: SoftLaunchService,
+    private membersService: MembersService,
+    private dataSource: DataSource,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResult> {
@@ -51,17 +55,28 @@ export class AuthService {
 
     const password_hash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 
-    const user = await this.usersService.create({
-      email: dto.email,
-      password_hash,
-      full_name: dto.full_name,
-      phone: dto.phone,
-      role_id: memberRole.id,
-      status: UserStatus.ACTIVE,
+    // users + members commit together: a registered member always has a member
+    // profile, so Admin Members sees them before their first booking. Either
+    // insert failing rolls back both.
+    const user = await this.dataSource.transaction(async (manager) => {
+      const created = await this.usersService.create(
+        {
+          email: dto.email,
+          password_hash,
+          full_name: dto.full_name,
+          phone: dto.phone,
+          role_id: memberRole.id,
+          status: UserStatus.ACTIVE,
+        },
+        manager,
+      );
+      await this.membersService.ensureForUser(manager, created.id);
+      return created;
     });
 
-    // Soft launch: best-effort slot allocation while the allocation period is
-    // open and quota remains. Never fails registration (quota full -> eligible=false).
+    // Soft launch: best-effort slot allocation AFTER the account commits, so an
+    // allocation problem never rolls back the account. Never fails registration
+    // (quota full -> eligible=false).
     await this.softLaunchService.tryAllocateOnRegistration(user.id);
 
     return this.buildAuthResult(user, memberRole.name);

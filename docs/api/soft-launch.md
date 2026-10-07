@@ -59,7 +59,7 @@ Returned inside every authenticated identity response — `POST /auth/register`,
 | `allocated_at` | When the slot was allocated, or `null`. |
 | `quota_full` | `true` when the user is not eligible and all current-campaign slots are taken (only while enabled). Show "soft launch is full" to these users. |
 
-Use `GET /auth/me` for a freshly registered user: it is user-keyed and works before the member row exists (`GET /member/me` still returns `404` until the first booking, unchanged).
+`GET /auth/me` is user-keyed and works for every account. `GET /member/me` also works right after registration (registration creates the member row); it returns `404` only for an older account with no member row.
 
 **Do not send `participant_code` in any request.** `POST /member/bookings` accepts only `schedule_id`; an extra field is rejected by validation.
 
@@ -163,7 +163,7 @@ After `SOFT_LAUNCH_END`, `active` becomes `false`, the code stays visible for hi
 - **Current campaign only.** `summary.allocated` and `summary.remaining` (`quota - allocated`, floored at 0) count rows allocated inside the current window; `items` lists only those rows. Historical rows stay in the DB but are not returned here.
 - `slot_no` is a global, never-reused sequence number across all campaigns (the first participant after 80 historical rows gets `81`). It is **not** the position within the current campaign.
 - `status`: `pending` (before START) · `active` (inside window) · `expired` (after END) · `disabled` (feature off).
-- `member` is `null` until the user's member row exists (created on first booking).
+- `member` is `null` only for an older account without a member row (registration now creates it; see [Auth](./auth.md)).
 - `soft_launch_bookings` counts bookings with `source = soft_launch` for that member.
 
 ### POST /admin/soft-launch/participants
@@ -178,7 +178,7 @@ or
 { "email": "alice@example.com" }
 ```
 
-`user_id` is canonical (works before any member row exists). Returns the participant item above.
+`user_id` is canonical (works even for an older account without a member row). Returns the participant item above.
 
 | Code | Reason |
 |---|---|
