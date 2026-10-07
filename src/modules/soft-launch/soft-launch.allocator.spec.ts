@@ -22,7 +22,14 @@ function fakeManager() {
   return { manager, repo };
 }
 
-const OPTS = { userId: 'u1', quota: 80, source: SoftLaunchAllocationSource.REGISTRATION };
+// All-time window: these tests are about locking, idempotency, slots and codes.
+const WINDOW = { start: new Date(0), end: new Date('9999-12-31T00:00:00Z') };
+const OPTS = {
+  userId: 'u1',
+  quota: 80,
+  window: WINDOW,
+  source: SoftLaunchAllocationSource.REGISTRATION,
+};
 
 describe('generateParticipantCode', () => {
   it('produces KLAB-SL- + 6 unambiguous chars, never user data', () => {
@@ -45,9 +52,15 @@ describe('allocateParticipant', () => {
 
   it('is idempotent: an allocated user gets the same row back without consuming a slot', async () => {
     const { manager, repo } = fakeManager();
-    repo.findOne.mockResolvedValue({ id: 'existing', user_id: 'u1', code: 'KLAB-SL-ABC234' });
+    repo.findOne.mockResolvedValue({
+      id: 'existing',
+      user_id: 'u1',
+      code: 'KLAB-SL-ABC234',
+      allocated_at: new Date(),
+    });
     const res = await allocateParticipant(manager as any, OPTS);
     expect(res).toEqual({
+      kind: 'allocated',
       participant: expect.objectContaining({ id: 'existing' }),
       created: false,
     });
@@ -55,10 +68,10 @@ describe('allocateParticipant', () => {
     expect(repo.save).not.toHaveBeenCalled();
   });
 
-  it('returns null and writes nothing once the quota is reached', async () => {
+  it('returns full and writes nothing once the quota is reached', async () => {
     const { manager, repo } = fakeManager();
     repo.count.mockResolvedValue(80);
-    await expect(allocateParticipant(manager as any, OPTS)).resolves.toBeNull();
+    await expect(allocateParticipant(manager as any, OPTS)).resolves.toEqual({ kind: 'full' });
     expect(repo.save).not.toHaveBeenCalled();
   });
 
@@ -70,14 +83,15 @@ describe('allocateParticipant', () => {
       source: SoftLaunchAllocationSource.ADMIN,
       allocatedBy: 'admin-1',
     });
-    expect(res?.created).toBe(true);
-    expect(res?.participant).toMatchObject({
+    if (res.kind !== 'allocated') throw new Error('expected allocation');
+    expect(res.created).toBe(true);
+    expect(res.participant).toMatchObject({
       user_id: 'u1',
       slot_no: 80,
       source: 'admin',
       allocated_by: 'admin-1',
     });
-    expect(res?.participant.code).toMatch(CODE_PATTERN);
+    expect(res.participant.code).toMatch(CODE_PATTERN);
   });
 
   it('regenerates on a code collision', async () => {
@@ -85,6 +99,6 @@ describe('allocateParticipant', () => {
     repo.exists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     const res = await allocateParticipant(manager as any, OPTS);
     expect(repo.exists).toHaveBeenCalledTimes(2);
-    expect(res?.participant.code).toMatch(CODE_PATTERN);
+    expect(res.kind === 'allocated' && res.participant.code).toMatch(CODE_PATTERN);
   });
 });

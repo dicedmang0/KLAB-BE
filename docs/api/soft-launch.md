@@ -1,6 +1,6 @@
 # Soft Launch — Participant Code Booking Access
 
-KLAB runs a soft launch from **2026-09-20 00:00:00 WIB** to **2026-09-25 23:59:59 WIB** for a maximum of **80 unique participants**. During that window, classes that start inside the window are **exclusive to allocated participants**, who book them with **no credit requirement and no credit debit**. Everything outside the window behaves exactly as before.
+KLAB runs a soft-launch **campaign** defined entirely by environment variables: a window `SOFT_LAUNCH_START` … `SOFT_LAUNCH_END` and a quota of `SOFT_LAUNCH_QUOTA` unique participants (current production target: **2026-10-07 00:00:00 WIB** to **2026-10-11 23:59:59 WIB**, **280 participants**). During that window, classes that start inside the window are **exclusive to allocated participants**, who book them with **no credit requirement and no credit debit**. Everything outside the window behaves exactly as before.
 
 All rules below are enforced by the backend. The FE only displays state.
 
@@ -10,11 +10,13 @@ All rules below are enforced by the backend. The FE only displays state.
 
 | Term | Meaning |
 |---|---|
-| Participant | A `users` row that holds a `soft_launch_participants` row. Eligibility is keyed to **`users.id`** (the JWT subject), never to a members row and never to the code. |
+| Current campaign | The window `[SOFT_LAUNCH_START, SOFT_LAUNCH_END]` (both inclusive, exact instants) from the running config. There is no campaign id: a participant row belongs to the current campaign **iff its `allocated_at` lies inside this window**. |
+| Historical participant | A row whose `allocated_at` is outside the current window (e.g. from an earlier campaign). Kept in the table, but **does not count toward the quota and grants no eligibility**. |
+| Participant | A `users` row that holds a **current-campaign** `soft_launch_participants` row. Eligibility is keyed to **`users.id`** (the JWT subject), never to a members row and never to the code. |
 | Participant code | `KLAB-SL-XXXXXX` — random, non-sequential, contains no user data. **Display / reference only.** The backend never accepts it as input; a copied code grants nothing. |
-| Allocation period | From the moment `SOFT_LAUNCH_ENABLED=true` is deployed until `SOFT_LAUNCH_END`. Registration auto-allocates while quota remains. |
+| Allocation period | `SOFT_LAUNCH_START` … `SOFT_LAUNCH_END` (inclusive), while `SOFT_LAUNCH_ENABLED=true`. Registration auto-allocates while quota remains. Nothing is allocated before `START` (a row stamped before `START` would fall outside the campaign). |
 | Booking window | `SOFT_LAUNCH_START` … `SOFT_LAUNCH_END` (inclusive). Soft-launch rules apply to a booking only when **both** the submission time **and** `schedule.start_time` are inside it (Option C). |
-| Quota | 80 **allocations**, not bookings. A participant may book any number of in-window classes subject to the normal capacity and one-active-booking-per-schedule rules. |
+| Quota | `SOFT_LAUNCH_QUOTA` **allocations in the current window**, not bookings. A participant may book any number of in-window classes subject to the normal capacity and one-active-booking-per-schedule rules. |
 
 ---
 
@@ -22,12 +24,14 @@ All rules below are enforced by the backend. The FE only displays state.
 
 ```
 SOFT_LAUNCH_ENABLED=true
-SOFT_LAUNCH_START=2026-09-20T00:00:00+07:00
-SOFT_LAUNCH_END=2026-09-25T23:59:59+07:00
-SOFT_LAUNCH_QUOTA=80
+SOFT_LAUNCH_START=2026-10-07T00:00:00+07:00
+SOFT_LAUNCH_END=2026-10-11T23:59:59+07:00
+SOFT_LAUNCH_QUOTA=280
 ```
 
-Dates are ISO-8601 with an explicit offset, so they are exact instants regardless of server timezone. `END` is inclusive. `START`/`END` are required when enabled; startup fails if they are missing or `START >= END`. Setting `SOFT_LAUNCH_ENABLED=false` is an instant kill switch: allocation and the gate stop, existing bookings are untouched.
+Dates are ISO-8601 with an explicit offset, so they are exact instants regardless of server timezone. `END` is inclusive. `START`/`END` are required when enabled; startup fails if they are missing or `START >= END`. `SOFT_LAUNCH_QUOTA` defaults to `80` when unset — always set it explicitly. Setting `SOFT_LAUNCH_ENABLED=false` is a kill switch: allocation and the gate stop, existing bookings are untouched.
+
+**Config is read once at startup.** Any change to these variables takes effect only after the API is **restarted / redeployed**.
 
 ---
 
@@ -41,7 +45,7 @@ Returned inside every authenticated identity response — `POST /auth/register`,
   "active": true,
   "eligible": true,
   "participant_code": "KLAB-SL-7H3KQ9",
-  "allocated_at": "2026-09-18T04:12:00.000Z",
+  "allocated_at": "2026-10-07T04:12:00.000Z",
   "quota_full": false
 }
 ```
@@ -50,10 +54,10 @@ Returned inside every authenticated identity response — `POST /auth/register`,
 |---|---|
 | `enabled` | Feature flag is on. |
 | `active` | Now is inside the booking window. Show the "soft launch live" state when `true`. |
-| `eligible` | This user holds an allocation (regardless of window). |
-| `participant_code` | The **owner's own** code, or `null`. Only ever the authenticated user's row. |
+| `eligible` | This user holds a **current-campaign** allocation. A historical participant is `false`. |
+| `participant_code` | The **owner's own** current-campaign code, or `null` (also `null` for a historical participant). Only ever the authenticated user's row. |
 | `allocated_at` | When the slot was allocated, or `null`. |
-| `quota_full` | `true` when the user is not eligible and all slots are taken (only while enabled). Show "soft launch is full" to these users. |
+| `quota_full` | `true` when the user is not eligible and all current-campaign slots are taken (only while enabled). Show "soft launch is full" to these users. |
 
 Use `GET /auth/me` for a freshly registered user: it is user-keyed and works before the member row exists (`GET /member/me` still returns `404` until the first booking, unchanged).
 
@@ -68,9 +72,7 @@ Use `GET /auth/me` for a freshly registered user: it is user-keyed and works bef
 - quota remaining → a slot and code are allocated automatically; the response carries `soft_launch.eligible = true` and the code.
 - quota full → registration **still succeeds**; `soft_launch.eligible = false`, `quota_full = true`.
 
-Allocation never fails registration. A user who registered but missed a slot (error, or before the feature was enabled) can be allocated by an admin (below).
-
-Receiving a code before 20 September does **not** allow early booking — the booking window is separate.
+Allocation never fails registration. A user who registered but missed a slot (error, or before the window opened) can be allocated by an admin (below) while the window is open. A user who already holds a historical row is not re-allocated (see [Limitations](#limitations)).
 
 ---
 
@@ -117,7 +119,7 @@ After `SOFT_LAUNCH_END`, `active` becomes `false`, the code stays visible for hi
 
 - `POST /member/schedules/:scheduleId/waitlist`: for an in-window class during the window, only participants may join (`403 SOFT_LAUNCH_NOT_ELIGIBLE` otherwise). Nothing is charged on join, as before.
 - `POST /admin/waitlist/:id/promote` re-evaluates the gate at promotion time. If the member is a participant and both "now" and the class start are inside the window, the promotion confirms with **no credit requirement, no debit**, `credit_cost: 0`, `source: "soft_launch"`. Otherwise the existing promotion rules apply (credit snapshot debited, `400` if insufficient). A non-participant promoted onto an in-window class during the window gets `403`.
-- No automatic promotion exists; nothing changed there.
+- Automatic promotion (seat freed by a cancellation) uses the same gate. Every path — booking, waitlist join, automatic and admin promotion — checks eligibility through the same current-campaign lookup, so a historical participant is never treated as eligible.
 
 ---
 
@@ -133,21 +135,21 @@ After `SOFT_LAUNCH_END`, `active` becomes `false`, the code stays visible for hi
     "summary": {
       "enabled": true,
       "active": false,
-      "start": "2026-09-19T17:00:00.000Z",
-      "end": "2026-09-25T16:59:59.000Z",
-      "quota": 80,
+      "start": "2026-10-06T17:00:00.000Z",
+      "end": "2026-10-11T16:59:59.000Z",
+      "quota": 280,
       "allocated": 42,
-      "remaining": 38
+      "remaining": 238
     },
     "items": [
       {
         "id": "uuid",
         "code": "KLAB-SL-7H3KQ9",
-        "slot_no": 1,
+        "slot_no": 81,
         "source": "registration",
         "status": "pending",
         "allocated_by": null,
-        "allocated_at": "2026-09-18T04:12:00.000Z",
+        "allocated_at": "2026-10-07T04:12:00.000Z",
         "user": { "id": "uuid", "email": "alice@example.com", "full_name": "Alice Tan" },
         "member": { "id": "uuid", "first_name": "Alice", "last_name": "Tan", "status": "active" },
         "soft_launch_bookings": 2
@@ -158,6 +160,8 @@ After `SOFT_LAUNCH_END`, `active` becomes `false`, the code stays visible for hi
 }
 ```
 
+- **Current campaign only.** `summary.allocated` and `summary.remaining` (`quota - allocated`, floored at 0) count rows allocated inside the current window; `items` lists only those rows. Historical rows stay in the DB but are not returned here.
+- `slot_no` is a global, never-reused sequence number across all campaigns (the first participant after 80 historical rows gets `81`). It is **not** the position within the current campaign.
 - `status`: `pending` (before START) · `active` (inside window) · `expired` (after END) · `disabled` (feature off).
 - `member` is `null` until the user's member row exists (created on first booking).
 - `soft_launch_bookings` counts bookings with `source = soft_launch` for that member.
@@ -181,7 +185,9 @@ or
 | 200 | Allocated — or already allocated (idempotent, same row returned) |
 | 400 | Neither `user_id` nor `email` given |
 | 404 | User not found |
-| 409 | `code: SOFT_LAUNCH_QUOTA_FULL` or `code: SOFT_LAUNCH_ALLOCATION_CLOSED` (feature disabled / period ended) |
+| 409 | `code: SOFT_LAUNCH_QUOTA_FULL` — current-campaign quota used up |
+| 409 | `code: SOFT_LAUNCH_ALLOCATION_CLOSED` — feature disabled, window not open yet, or window ended |
+| 409 | `code: SOFT_LAUNCH_PREVIOUS_CAMPAIGN` — user holds a historical row and cannot be allocated again |
 
 Every manual allocation records `allocated_by` and `source: "admin"` on the row — that row is the audit record.
 
@@ -202,13 +208,21 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:3001/admin/soft-launch/par
 
 ## Quota integrity
 
-`COUNT(soft_launch_participants) <= SOFT_LAUNCH_QUOTA` is guaranteed by the allocator, shared by registration and admin allocation:
+`COUNT(rows with allocated_at in [START, END]) <= SOFT_LAUNCH_QUOTA` is guaranteed by the allocator, shared by registration and admin allocation:
 
 1. `SELECT pg_advisory_xact_lock(<constant>)` serialises every allocation until commit.
-2. Lookup by `user_id` → return existing row (idempotent).
-3. `COUNT(*)` — its snapshot is taken after the lock is granted, so it sees the previous holder's commit.
-4. Refuse if `count >= quota`, else insert with `slot_no = count + 1`.
+2. Lookup by `user_id` → current-campaign row: return it (idempotent); historical row: refuse (`SOFT_LAUNCH_PREVIOUS_CAMPAIGN`).
+3. `COUNT(*) WHERE allocated_at BETWEEN START AND END` — its snapshot is taken after the lock is granted, so it sees the previous holder's commit.
+4. Refuse if `count >= quota`, else insert with `slot_no = MAX(slot_no) + 1` over the **whole** table and a code unique across all rows.
 
-DB backstops: `UNIQUE(user_id)`, `UNIQUE(code)`, `UNIQUE(slot_no)` — a non-serialised path can only fail loudly, never produce participant #81. Rows are never updated or deleted.
+DB backstops: `UNIQUE(user_id)`, `UNIQUE(code)`, `UNIQUE(slot_no)` — a non-serialised path can only fail loudly, never over-allocate. Rows are never updated or deleted.
 
 Verify locally: `npm run seed:soft-launch-smoke` fires 100 concurrent allocations and fails if the quota is ever exceeded.
+
+---
+
+## Limitations
+
+- **One row per user, ever.** `UNIQUE(user_id)` is global, so a user who was a participant in an earlier campaign **cannot be re-allocated** in a later one: registration skips them, admin allocation returns `409 SOFT_LAUNCH_PREVIOUS_CAMPAIGN`, and they book under normal rules. Lifting this requires a schema change (e.g. a campaign table / per-campaign uniqueness) — out of scope here.
+- **Campaign membership is inferred from `allocated_at`.** Changing `SOFT_LAUNCH_START`/`END` changes which existing rows count as current. Do not move the window over rows that belong to a different campaign.
+- `allocated_at` is stamped by the DB clock; an allocation in the last instant before `END` could, under app/DB clock skew, land just after `END` and not count as current.

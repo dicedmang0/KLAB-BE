@@ -87,6 +87,8 @@ export async function seedSoftLaunchSmoke(dataSource: DataSource): Promise<void>
         allocateParticipant(manager, {
           userId,
           quota,
+          // All-time window: this smoke checks the lock against the whole table.
+          window: { start: new Date(0), end: new Date('9999-12-31T00:00:00Z') },
           source: SoftLaunchAllocationSource.REGISTRATION,
         }),
       ),
@@ -95,8 +97,8 @@ export async function seedSoftLaunchSmoke(dataSource: DataSource): Promise<void>
   const elapsed = Date.now() - started;
 
   // ── Assertions ────────────────────────────────────────────────────────────
-  const granted = results.filter((r) => r?.created).length;
-  const refused = results.filter((r) => r === null).length;
+  const granted = results.filter((r) => r.kind === 'allocated' && r.created).length;
+  const refused = results.filter((r) => r.kind === 'full').length;
 
   const rows = await participantRepo.find({ order: { slot_no: 'ASC' } });
   const total = rows.length;

@@ -37,7 +37,8 @@ export class SoftLaunchParticipant {
   @Column({ length: 20 })
   code: string;
 
-  // 1..quota. Sequential and internal (admin-only); never part of the public code.
+  // Global sequence across all campaigns (MAX+1), not the position in the current
+  // campaign. Internal (admin-only); never part of the public code.
   @Column({ type: 'smallint' })
   slot_no: number;
 

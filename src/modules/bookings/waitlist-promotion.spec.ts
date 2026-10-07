@@ -57,6 +57,11 @@ class FakeDb {
   private matches(row: Row, where: Row = {}): boolean {
     return Object.entries(where).every(([k, v]) => {
       if (v instanceof FindOperator) {
+        if (v.type === 'between') {
+          const [from, to] = v.value as unknown as [Date, Date];
+          const t = new Date(row[k]).getTime();
+          return t >= new Date(from).getTime() && t <= new Date(to).getTime();
+        }
         if (v.type !== 'in') throw new Error(`unsupported operator ${v.type}`);
         return (v.value as unknown[]).includes(row[k]);
       }
@@ -242,6 +247,7 @@ function world(opts: WorldOpts = {}) {
       id: `p-${name}`,
       user_id: `u-${name}`,
       code: `KLAB-SL-${name}`,
+      allocated_at: new Date(NOW), // allocated inside the current campaign window
     });
 
   const row = (name: string) => db.table(Booking).find((b) => b.id === `b-${name}`)!;

@@ -1,4 +1,5 @@
 import { ForbiddenException } from '@nestjs/common';
+import { Between } from 'typeorm';
 import { SoftLaunchService, SOFT_LAUNCH_NOT_ELIGIBLE } from './soft-launch.service';
 import { SoftLaunchConfig } from '../../config/soft-launch.config';
 
@@ -11,15 +12,13 @@ const AFTER_WINDOW_CLASS = new Date('2026-09-26T09:00:00+07:00');
 
 describe('SoftLaunchService', () => {
   let cfg: SoftLaunchConfig;
-  let repo: { findOne: jest.Mock; count: jest.Mock };
-  let manager: { findOne: jest.Mock };
+  let manager: { findOne: jest.Mock; count: jest.Mock };
   let service: SoftLaunchService;
 
   beforeEach(() => {
     cfg = { enabled: true, start: START, end: END, quota: 80 };
-    repo = { findOne: jest.fn(), count: jest.fn() };
-    manager = { findOne: jest.fn() };
-    const dataSource = { getRepository: () => repo };
+    manager = { findOne: jest.fn(), count: jest.fn() };
+    const dataSource = { manager };
     const config = { get: () => cfg };
     service = new SoftLaunchService(dataSource as any, config as any);
     jest.useFakeTimers({ now: IN_WINDOW_NOW });
@@ -42,8 +41,12 @@ describe('SoftLaunchService', () => {
   });
 
   describe('allocationOpen', () => {
-    it('is open from enable until END, even before START', () => {
+    it('is open only inside the window (START <= now <= END), not before START', () => {
       jest.setSystemTime(new Date('2026-09-18T12:00:00+07:00'));
+      expect(service.allocationOpen()).toBe(false);
+      jest.setSystemTime(START);
+      expect(service.allocationOpen()).toBe(true);
+      jest.setSystemTime(END);
       expect(service.allocationOpen()).toBe(true);
     });
 
@@ -75,9 +78,9 @@ describe('SoftLaunchService', () => {
     it('returns true (bypass) for a participant on an in-window class', async () => {
       manager.findOne.mockResolvedValue({ id: 'p1', user_id: 'u1', code: 'KLAB-SL-ABC234' });
       await expect(service.checkBooking(manager as any, 'u1', IN_WINDOW_CLASS)).resolves.toBe(true);
-      // Eligibility is looked up by the authenticated user id only.
+      // Looked up by the authenticated user id, scoped to the current campaign window.
       expect(manager.findOne).toHaveBeenCalledWith(expect.anything(), {
-        where: { user_id: 'u1' },
+        where: { user_id: 'u1', allocated_at: Between(START, END) },
       });
     });
 
@@ -105,8 +108,8 @@ describe('SoftLaunchService', () => {
 
   describe('viewFor', () => {
     it('exposes the owner code and skips the quota count when eligible', async () => {
-      const allocatedAt = new Date('2026-09-18T04:12:00Z');
-      repo.findOne.mockResolvedValue({ code: 'KLAB-SL-7H3KQ9', allocated_at: allocatedAt });
+      const allocatedAt = new Date('2026-09-21T04:12:00Z');
+      manager.findOne.mockResolvedValue({ code: 'KLAB-SL-7H3KQ9', allocated_at: allocatedAt });
       await expect(service.viewFor('u1')).resolves.toEqual({
         enabled: true,
         active: true,
@@ -115,12 +118,12 @@ describe('SoftLaunchService', () => {
         allocated_at: allocatedAt,
         quota_full: false,
       });
-      expect(repo.count).not.toHaveBeenCalled();
+      expect(manager.count).not.toHaveBeenCalled();
     });
 
     it('reports quota_full for a non-participant once the quota is reached', async () => {
-      repo.findOne.mockResolvedValue(null);
-      repo.count.mockResolvedValue(80);
+      manager.findOne.mockResolvedValue(null);
+      manager.count.mockResolvedValue(80);
       await expect(service.viewFor('u2')).resolves.toMatchObject({
         eligible: false,
         participant_code: null,
@@ -131,13 +134,13 @@ describe('SoftLaunchService', () => {
 
     it('never reports quota_full while disabled', async () => {
       cfg.enabled = false;
-      repo.findOne.mockResolvedValue(null);
+      manager.findOne.mockResolvedValue(null);
       await expect(service.viewFor('u2')).resolves.toMatchObject({
         enabled: false,
         active: false,
         quota_full: false,
       });
-      expect(repo.count).not.toHaveBeenCalled();
+      expect(manager.count).not.toHaveBeenCalled();
     });
   });
 });

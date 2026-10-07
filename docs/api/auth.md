@@ -62,7 +62,7 @@ Creates a new user account and returns a JWT. Every self-registered user receive
 
 `password_hash` is never included in any response.
 
-`soft_launch` reports the new user's soft-launch state (see [Soft Launch](./soft-launch.md)). While the allocation period is open and quota remains, a participant code is allocated automatically. When the quota is full, registration still succeeds with `eligible: false, quota_full: true`.
+`soft_launch` reports the new user's soft-launch state (see [Soft Launch](./soft-launch.md)). While the current campaign window is open and its quota remains, a participant code is allocated automatically. When the current-campaign quota is full, registration still succeeds with `eligible: false, quota_full: true`.
 
 **Errors:**
 

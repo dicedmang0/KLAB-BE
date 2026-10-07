@@ -146,4 +146,4 @@ Query params accepted by `GET /admin/payments` and `GET /admin/doku-transactions
 - [Admin Schedules](./admin-schedules.md) — includes schedule waitlist queue
 - [Admin Bookings, Members & Credits](./admin-bookings-members-credits.md) — includes admin waitlist promotion
 - [Payments & DOKU](./payments-doku.md)
-- [Soft Launch](./soft-launch.md) — participant codes, the 20–25 Sept booking gate, admin allocation
+- [Soft Launch](./soft-launch.md) — participant codes, the env-configured campaign window and booking gate, admin allocation

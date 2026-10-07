@@ -12,7 +12,12 @@ import {
   SoftLaunchParticipant,
   SoftLaunchAllocationSource,
 } from './entities/soft-launch-participant.entity';
-import { allocateParticipant, AllocateResult } from './soft-launch.allocator';
+import {
+  allocateParticipant,
+  AllocateResult,
+  CampaignWindow,
+  inCampaign,
+} from './soft-launch.allocator';
 import { AllocateParticipantDto } from './dto/allocate-participant.dto';
 import { User } from '../users/entities/user.entity';
 import { Member, MemberStatus } from '../members/entities/member.entity';
@@ -21,6 +26,8 @@ import { Booking, BookingSource } from '../bookings/entities/booking.entity';
 export const SOFT_LAUNCH_NOT_ELIGIBLE = 'SOFT_LAUNCH_NOT_ELIGIBLE';
 export const SOFT_LAUNCH_QUOTA_FULL = 'SOFT_LAUNCH_QUOTA_FULL';
 export const SOFT_LAUNCH_ALLOCATION_CLOSED = 'SOFT_LAUNCH_ALLOCATION_CLOSED';
+/** The user was a participant in an earlier campaign; UQ(user_id) blocks a second row. */
+export const SOFT_LAUNCH_PREVIOUS_CAMPAIGN = 'SOFT_LAUNCH_PREVIOUS_CAMPAIGN';
 
 /** Safe, owner-only projection returned inside authenticated responses. */
 export interface SoftLaunchView {
@@ -88,10 +95,46 @@ export class SoftLaunchService {
     return t >= start.getTime() && t <= end.getTime();
   }
 
-  /** Auto/admin allocation is open from deploy (enabled) until the window ends. */
+  /**
+   * The current campaign window [SOFT_LAUNCH_START, SOFT_LAUNCH_END] (inclusive),
+   * or null when not configured. Defines BOTH the booking window and which
+   * participant rows belong to the current campaign (allocated_at inside it).
+   */
+  campaignWindow(): CampaignWindow | null {
+    const { start, end } = this.cfg;
+    return start && end ? { start, end } : null;
+  }
+
+  /**
+   * Allocation (registration + admin) is open only while the window is active:
+   * START <= now <= END. A row allocated before START would fall outside the
+   * campaign window (not counted, not eligible) and UQ(user_id) would block that
+   * user for good, so allocation can no longer open early.
+   */
   allocationOpen(): boolean {
-    const { enabled, end } = this.cfg;
-    return enabled && !!end && Date.now() <= end.getTime();
+    return this.windowActive(new Date());
+  }
+
+  /**
+   * The user's participant row for the CURRENT campaign, or null. A row from an
+   * earlier window is history: it is never returned here, so it grants nothing.
+   */
+  private currentParticipant(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<SoftLaunchParticipant | null> {
+    const window = this.campaignWindow();
+    if (!window) return Promise.resolve(null);
+    return manager.findOne(SoftLaunchParticipant, {
+      where: { user_id: userId, allocated_at: inCampaign(window) },
+    });
+  }
+
+  /** Participants allocated in the CURRENT campaign (earlier windows excluded). */
+  private async currentAllocatedCount(manager: EntityManager): Promise<number> {
+    const window = this.campaignWindow();
+    if (!window) return 0;
+    return manager.count(SoftLaunchParticipant, { where: { allocated_at: inCampaign(window) } });
   }
 
   // ── Booking gate ──────────────────────────────────────────────────────────
@@ -106,11 +149,13 @@ export class SoftLaunchService {
    * the window, or class outside the window): the caller runs the unchanged
    * normal credit flow.
    * Throws 403 SOFT_LAUNCH_NOT_ELIGIBLE when the rules apply but the user holds
-   * no allocation — in-window classes are exclusive to participants, with no
+   * no CURRENT-campaign allocation (none at all, or only one from an earlier
+   * window) — in-window classes are exclusive to current participants, with no
    * fallback to credit booking.
    *
    * Eligibility is resolved from the authenticated user id only; a participant
-   * code is never accepted as input.
+   * code is never accepted as input. Used by direct booking, waitlist join and
+   * waitlist promotion alike.
    */
   async checkBooking(
     manager: EntityManager,
@@ -119,9 +164,7 @@ export class SoftLaunchService {
   ): Promise<boolean> {
     if (!this.windowActive(new Date()) || !this.windowActive(scheduleStart)) return false;
 
-    const participant = userId
-      ? await manager.findOne(SoftLaunchParticipant, { where: { user_id: userId } })
-      : null;
+    const participant = userId ? await this.currentParticipant(manager, userId) : null;
     if (!participant) {
       throw new ForbiddenException({
         message: 'This class is reserved for soft-launch participants',
@@ -133,20 +176,30 @@ export class SoftLaunchService {
 
   // ── Allocation ────────────────────────────────────────────────────────────
 
+  /** The user's CURRENT-campaign participant row, or null. */
   findByUserId(userId: string): Promise<SoftLaunchParticipant | null> {
-    return this.dataSource
-      .getRepository(SoftLaunchParticipant)
-      .findOne({ where: { user_id: userId } });
+    return this.currentParticipant(this.dataSource.manager, userId);
   }
 
-  /** Transactional, idempotent allocation. Null when the quota is full. */
+  /**
+   * Transactional, idempotent current-campaign allocation. Callers check
+   * allocationOpen() first, so a configured window always exists here.
+   */
   allocate(
     userId: string,
     source: SoftLaunchAllocationSource,
     allocatedBy: string | null = null,
-  ): Promise<AllocateResult | null> {
+  ): Promise<AllocateResult> {
+    const window = this.campaignWindow();
+    if (!window) return Promise.resolve({ kind: 'full' });
     return this.dataSource.transaction((manager) =>
-      allocateParticipant(manager, { userId, quota: this.cfg.quota, source, allocatedBy }),
+      allocateParticipant(manager, {
+        userId,
+        quota: this.cfg.quota,
+        window,
+        source,
+        allocatedBy,
+      }),
     );
   }
 
@@ -159,7 +212,11 @@ export class SoftLaunchService {
     if (!this.allocationOpen()) return;
     try {
       const result = await this.allocate(userId, SoftLaunchAllocationSource.REGISTRATION);
-      if (!result) this.logger.log(`quota full — user ${userId} registered without a slot`);
+      if (result.kind === 'full') {
+        this.logger.log(`quota full — user ${userId} registered without a slot`);
+      } else if (result.kind === 'previous_campaign') {
+        this.logger.log(`user ${userId} holds a previous-campaign slot — not re-allocated`);
+      }
     } catch (e) {
       this.logger.error(
         `allocation failed for user ${userId}: ${e instanceof Error ? e.message : e}`,
@@ -169,12 +226,19 @@ export class SoftLaunchService {
 
   // ── Member-facing view ────────────────────────────────────────────────────
 
+  /**
+   * Current-campaign view: `eligible`, `participant_code` and `allocated_at`
+   * reflect only an allocation inside the current window (an earlier-campaign
+   * row reads as not eligible), and `quota_full` compares the current-campaign
+   * count with SOFT_LAUNCH_QUOTA — earlier campaigns never fill it.
+   */
   async viewFor(userId: string): Promise<SoftLaunchView> {
     const { enabled, quota } = this.cfg;
-    const repo = this.dataSource.getRepository(SoftLaunchParticipant);
-    const participant = await repo.findOne({ where: { user_id: userId } });
+    const manager = this.dataSource.manager;
+    const participant = await this.currentParticipant(manager, userId);
     const eligible = !!participant;
-    const quotaFull = !eligible && enabled ? (await repo.count()) >= quota : false;
+    const quotaFull =
+      !eligible && enabled ? (await this.currentAllocatedCount(manager)) >= quota : false;
 
     return {
       enabled,
@@ -199,19 +263,29 @@ export class SoftLaunchService {
     if (!user) throw new NotFoundException('User not found');
 
     if (!this.allocationOpen()) {
+      const { enabled, start } = this.cfg;
       throw new ConflictException({
-        message: this.cfg.enabled
-          ? 'Soft-launch allocation period has ended'
-          : 'Soft launch is not enabled',
+        message: !enabled
+          ? 'Soft launch is not enabled'
+          : start && Date.now() < start.getTime()
+            ? 'Soft-launch allocation has not opened yet'
+            : 'Soft-launch allocation period has ended',
         code: SOFT_LAUNCH_ALLOCATION_CLOSED,
       });
     }
 
     const result = await this.allocate(user.id, SoftLaunchAllocationSource.ADMIN, adminUserId);
-    if (!result) {
+    if (result.kind === 'full') {
       throw new ConflictException({
         message: 'Soft-launch quota is full',
         code: SOFT_LAUNCH_QUOTA_FULL,
+      });
+    }
+    if (result.kind === 'previous_campaign') {
+      throw new ConflictException({
+        message:
+          'This user was a participant in a previous soft-launch campaign and cannot be allocated again.',
+        code: SOFT_LAUNCH_PREVIOUS_CAMPAIGN,
       });
     }
 
@@ -219,9 +293,14 @@ export class SoftLaunchService {
     return view;
   }
 
+  /**
+   * The CURRENT campaign: only participants allocated inside the configured
+   * window are listed and counted (`allocated`, `remaining`). Earlier-campaign
+   * rows stay in the table as history but are not part of this view.
+   */
   async listForAdmin(): Promise<AdminParticipantList> {
     const { enabled, start, end, quota } = this.cfg;
-    const items = await this.queryAdminViews();
+    const items = this.campaignWindow() ? await this.queryAdminViews() : [];
     return {
       summary: {
         enabled,
@@ -274,7 +353,11 @@ export class SoftLaunchService {
       )
       .orderBy('p.slot_no', 'ASC');
 
-    if (userId) qb.where('p.user_id = :userId', { userId });
+    // Current campaign only (same inclusive window as inCampaign()).
+    const window = this.campaignWindow();
+    if (!window) return [];
+    qb.where('p.allocated_at BETWEEN :start AND :end', window);
+    if (userId) qb.andWhere('p.user_id = :userId', { userId });
 
     const status = this.participantStatus();
     const rows = await qb.getRawMany();
