@@ -654,3 +654,127 @@ describe('soft-launch promotion', () => {
     expect(w.state()).toEqual({ confirmed: ['B', 'C', 'D', 'Q'], waitlist: ['#1 P'] });
   });
 });
+
+describe('admin booking on behalf of a member', () => {
+  const add = (w: ReturnType<typeof world>, name: string) =>
+    w.bookings.createByAdmin('u-admin', { member_id: `m-${name}`, schedule_id: 'sch' });
+  const created = (w: ReturnType<typeof world>, name: string) =>
+    w.db.table(Booking).find((b) => b.member_id === `m-${name}` && b.id !== `b-${name}`)!;
+
+  it('confirms and debits credit when a seat is free', async () => {
+    const w = world();
+    w.confirmed('A');
+    w.member('N', { credit: 3 });
+
+    const booking = await add(w, 'N');
+
+    expect(booking.status).toBe(BookingStatus.CONFIRMED);
+    expect(created(w, 'N')).toMatchObject({
+      status: BookingStatus.CONFIRMED,
+      source: BookingSource.ADMIN,
+      credit_cost: 1,
+      attendance_status: AttendanceStatus.NOT_CHECKED_IN,
+    });
+    expect(w.balance('N')).toBe(2);
+    expect(w.debits('N')).toHaveLength(1);
+    expect(created(w, 'N').credit_ledger_id).toBe(w.debits('N')[0].id);
+  });
+
+  it('adds to the back of the waitlist, uncharged, when the class is full', async () => {
+    const w = world();
+    w.confirmed('A', 'B', 'C', 'D');
+    w.waitlisted('E', 1);
+    w.member('N', { credit: 3 });
+
+    const booking = await add(w, 'N');
+
+    expect(booking.status).toBe(BookingStatus.WAITLISTED);
+    expect(w.state()).toEqual({ confirmed: ['A', 'B', 'C', 'D'], waitlist: ['#1 E', '#2 N'] });
+    expect(created(w, 'N')).toMatchObject({ source: BookingSource.ADMIN, credit_cost: 1 });
+    expect(w.balance('N')).toBe(3);
+    expect(w.debits('N')).toHaveLength(0);
+  });
+
+  it('an admin-added waitlist entry is promoted automatically like any other', async () => {
+    const w = world();
+    w.confirmed('A', 'B', 'C', 'D');
+    w.member('N', { credit: 3 });
+    await add(w, 'N');
+
+    await w.bookings.cancelAny('b-A', 'admin');
+
+    expect(w.state()).toEqual({ confirmed: ['B', 'C', 'D', 'N'], waitlist: [] });
+    expect(w.balance('N')).toBe(2);
+  });
+
+  it('rejects a member who is already booked or waitlisted on the class', async () => {
+    const w = world();
+    w.confirmed('A', 'B', 'C', 'D');
+    w.waitlisted('E', 1);
+
+    expect(await rejection(add(w, 'A'))).toBeInstanceOf(ConflictException);
+    expect(await rejection(add(w, 'E'))).toBeInstanceOf(ConflictException);
+    expect(w.state()).toEqual({ confirmed: ['A', 'B', 'C', 'D'], waitlist: ['#1 E'] });
+  });
+
+  it('lets a member whose earlier booking was cancelled be added again', async () => {
+    const w = world();
+    w.member('N');
+    w.booking('N', BookingStatus.CANCELLED);
+
+    const booking = await add(w, 'N');
+
+    expect(booking.status).toBe(BookingStatus.CONFIRMED);
+  });
+
+  it('rejects unknown and inactive members, and insufficient credit, without side effects', async () => {
+    const w = world();
+    w.member('I', { status: MemberStatus.INACTIVE });
+    w.member('P', { credit: 0 });
+
+    expect((await rejection(add(w, 'ghost'))).getStatus()).toBe(404);
+    expect((await rejection(add(w, 'I'))).getStatus()).toBe(400);
+    expect((await rejection(add(w, 'P'))).getStatus()).toBe(400);
+    expect(w.db.table(Booking)).toHaveLength(0);
+    expect(w.balance('P')).toBe(0);
+  });
+
+  it('rejects a class that has already started', async () => {
+    const w = world({ startsInMs: -3600_000 });
+    w.member('N');
+
+    expect((await rejection(add(w, 'N'))).getStatus()).toBe(400);
+  });
+
+  it('soft launch: a non-participant is rejected, a participant is booked free', async () => {
+    const active = { start: new Date(NOW - DAY), end: new Date(NOW + 5 * DAY) };
+    const w = world({ softLaunch: active });
+    w.member('N');
+    w.member('P', { credit: 0 });
+    w.participant('P');
+
+    const denied = await rejection(add(w, 'N'));
+    expect(denied).toBeInstanceOf(ForbiddenException);
+    expect(denied.getResponse().code).toBe(SOFT_LAUNCH_NOT_ELIGIBLE);
+
+    await add(w, 'P');
+    expect(created(w, 'P')).toMatchObject({
+      status: BookingStatus.CONFIRMED,
+      credit_cost: 0,
+      source: BookingSource.SOFT_LAUNCH,
+    });
+    expect(w.debits('P')).toHaveLength(0);
+  });
+
+  it('locks schedule → queue → member', async () => {
+    const w = world();
+    w.confirmed('A', 'B', 'C', 'D');
+    w.waitlisted('E', 1);
+    w.member('N');
+    w.db.locks = [];
+
+    await add(w, 'N');
+
+    expect(w.db.locks).toEqual(['Schedule:sch', 'Booking:b-E', 'Member:m-N']);
+  });
+});

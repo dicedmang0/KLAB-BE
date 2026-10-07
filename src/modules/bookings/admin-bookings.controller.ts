@@ -1,8 +1,10 @@
 import { Controller, Get, Post, Param, Body, Query, Request } from '@nestjs/common';
 import { BookingsService } from './bookings.service';
 import { CancelBookingDto } from './dto/cancel-booking.dto';
+import { AdminCreateBookingDto } from './dto/admin-create-booking.dto';
 import { ListBookingsDto } from './dto/list-bookings.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 
 @Controller('admin/bookings')
 export class AdminBookingsController {
@@ -18,6 +20,19 @@ export class AdminBookingsController {
   @Permissions('bookings:read_all')
   findOne(@Param('id') id: string) {
     return this.bookingsService.findDetail(id);
+  }
+
+  /**
+   * Books an existing member into a class on their behalf. Confirms the seat
+   * when one is free, otherwise adds the member to the back of the waitlist.
+   * front_desk also holds `bookings:create` (for future flows), so the role
+   * check narrows this endpoint to owner and admin.
+   */
+  @Post()
+  @Roles('owner', 'admin')
+  @Permissions('bookings:create')
+  create(@Body() dto: AdminCreateBookingDto, @Request() req: any) {
+    return this.bookingsService.createByAdmin(req.user.id, dto);
   }
 
   @Post(':id/check-in')

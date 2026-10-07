@@ -72,6 +72,47 @@ Returns all bookings across all members. Supports filtering.
 
 ---
 
+## POST /admin/bookings
+
+Books an **existing member** into a class on their behalf (e.g. a member asks the studio to move them to another class).
+
+**Auth:** Bearer token  
+**Permission:** `bookings:create` **and** role `owner` or `admin` (front desk is rejected with `403`)
+
+**Request body:**
+
+```json
+{ "member_id": "uuid", "schedule_id": "uuid" }
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `member_id` | uuid | Yes | `id` from `GET /admin/members` (the member id, not the user id) |
+| `schedule_id` | uuid | Yes | `id` of a published schedule that has not started |
+
+**Behaviour** — same rules as a member booking themselves:
+
+- **Seat available** → booking is created `confirmed`. Credit is debited at the class type's `credit_cost` (nothing for a free class or during a soft-launch bypass). `source` is `admin`, or `soft_launch` when the soft-launch bypass applied.
+- **Class full** → the member is added to the **back of the waitlist** (`status: "waitlisted"`, `waitlist_position` set, `source: "admin"`). Nothing is charged. Automatic promotion treats the entry like any other waitlist entry.
+- **Soft launch** → while the soft-launch window is active for the class, only allocated participants can be added (the gate is evaluated for the member, not the admin).
+
+Read `status` on the response to tell the two outcomes apart.
+
+**Response `201`:** The created booking with `member` and `schedule` relations (same shape as `GET /admin/bookings/:id`).
+
+**Errors:**
+
+| Status | Condition |
+|---|---|
+| 400 | Validation failed; schedule not open for booking or already started; member account not active; member has insufficient credit balance |
+| 403 | Caller is not `owner`/`admin`; or `code: "SOFT_LAUNCH_NOT_ELIGIBLE"` — class is reserved for soft-launch participants and the member is not one |
+| 404 | Member or schedule not found |
+| 409 | Member already has an active booking, or is already on the waitlist, for this schedule |
+
+No email is sent — the studio informs the member manually.
+
+---
+
 ## POST /admin/bookings/:id/check-in
 
 Marks the member as checked in for this booking.

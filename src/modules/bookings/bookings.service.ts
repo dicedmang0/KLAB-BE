@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ConflictException,
@@ -7,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, In, QueryFailedError, Repository } from 'typeorm';
 import { Booking, BookingStatus, AttendanceStatus, BookingSource } from './entities/booking.entity';
 import { Schedule, ScheduleStatus } from '../schedules/entities/schedule.entity';
 import { ClassType } from '../class-types/entities/class-type.entity';
@@ -17,6 +18,7 @@ import { CreditsService } from '../credits/credits.service';
 import { MembersService } from '../members/members.service';
 import { SoftLaunchService } from '../soft-launch/soft-launch.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { AdminCreateBookingDto } from './dto/admin-create-booking.dto';
 import { WaitlistPromotionService } from './waitlist-promotion.service';
 import { ListBookingsDto } from './dto/list-bookings.dto';
 
@@ -31,6 +33,8 @@ const PG_UNIQUE_VIOLATION = '23505';
 
 @Injectable()
 export class BookingsService {
+  private readonly logger = new Logger(BookingsService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(Booking)
@@ -200,6 +204,141 @@ export class BookingsService {
     return this.findDetail(bookingId);
   }
 
+  // ── Admin booking on behalf of a member ──────────────────────────────────
+
+  /**
+   * Books an existing member into a class on their behalf (owner/admin only).
+   *
+   * Same rules as a member booking themselves: published future class, active
+   * member, soft-launch gate, credit debited at the class's cost (nothing during
+   * a soft-launch bypass or for a free class), never over capacity. The one
+   * difference is a full class: instead of 409 the member joins the back of the
+   * waitlist — exactly what the member-side waitlist join would create, so
+   * automatic promotion treats the entry like any other.
+   *
+   * Lock order is the canonical schedule → booking rows (queue) → member.
+   */
+  async createByAdmin(adminUserId: string, dto: AdminCreateBookingDto): Promise<Booking> {
+    const bookingId = await this.dataSource.transaction(async (manager) => {
+      // 1. lock schedule row, validate it is published and bookable
+      const schedule = await this.waitlistPromotion.lockSchedule(manager, dto.schedule_id);
+      this.assertBookable(schedule);
+
+      // 2. capacity decides confirmed vs waitlisted; a waitlist entry goes to the
+      //    back of the (renumbered) active queue
+      const confirmedCount = await this.waitlistPromotion.countConfirmed(manager, schedule.id);
+      const isFull = confirmedCount >= schedule.capacity;
+      const queueLength = isFull
+        ? await this.waitlistPromotion.normalizePositions(manager, schedule.id)
+        : 0;
+
+      // 3. lock member row
+      const member = await manager.findOne(Member, {
+        where: { id: dto.member_id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!member) throw new NotFoundException(`Member ${dto.member_id} not found`);
+      if (member.status !== MemberStatus.ACTIVE) {
+        throw new BadRequestException('Member account is not active');
+      }
+
+      // 4. one active booking per member + schedule (the partial unique index
+      //    is still the backstop on insert)
+      const existing = await manager.findOne(Booking, {
+        where: {
+          member_id: member.id,
+          schedule_id: schedule.id,
+          status: In(CANCELLABLE_STATUSES),
+        },
+      });
+      if (existing) {
+        throw new ConflictException(
+          existing.status === BookingStatus.WAITLISTED
+            ? 'Member is already on the waitlist for this schedule'
+            : 'Member already has an active booking for this schedule',
+        );
+      }
+
+      // 5. soft-launch gate, evaluated for the MEMBER (not the admin): true →
+      //    bypass (charge nothing); throws 403 SOFT_LAUNCH_NOT_ELIGIBLE when the
+      //    class is in-window and the member is not a participant.
+      const softLaunchBypass = await this.softLaunchService.checkBooking(
+        manager,
+        member.user_id,
+        schedule.start_time,
+      );
+
+      const classType = await manager.findOne(ClassType, {
+        where: { id: schedule.class_type_id },
+      });
+      const classCost = classType?.credit_cost ?? 0;
+
+      // 6a. full → waitlist entry; nothing is charged until promotion
+      if (isFull) {
+        const entry = manager.create(Booking, {
+          booking_code: this.generateBookingCode(),
+          member_id: member.id,
+          schedule_id: schedule.id,
+          status: BookingStatus.WAITLISTED,
+          attendance_status: AttendanceStatus.NOT_CHECKED_IN,
+          source: BookingSource.ADMIN,
+          credit_cost: classCost,
+          waitlist_position: queueLength + 1,
+        });
+        try {
+          return (await manager.save(Booking, entry)).id;
+        } catch (e) {
+          throw this.mapAdminInsertError(e);
+        }
+      }
+
+      // 6b. seat available → confirmed booking, credit debited in the same transaction
+      const cost = softLaunchBypass ? 0 : classCost;
+      if (cost > 0 && member.credit_balance < cost) {
+        throw new BadRequestException('Member has insufficient credit balance');
+      }
+
+      const booking = manager.create(Booking, {
+        booking_code: this.generateBookingCode(),
+        member_id: member.id,
+        schedule_id: schedule.id,
+        status: BookingStatus.CONFIRMED,
+        attendance_status: AttendanceStatus.NOT_CHECKED_IN,
+        // A soft-launch bypass keeps its own source so participant booking
+        // counts stay correct, same as member bookings and promotions.
+        source: softLaunchBypass ? BookingSource.SOFT_LAUNCH : BookingSource.ADMIN,
+        credit_cost: cost,
+      });
+
+      let saved: Booking;
+      try {
+        saved = await manager.save(Booking, booking);
+      } catch (e) {
+        throw this.mapAdminInsertError(e);
+      }
+
+      if (cost > 0) {
+        const ledger = await this.creditsService.applyDelta(manager, member, -cost, {
+          type: CreditLedgerType.BOOKING_DEBIT,
+          bookingId: saved.id,
+          reason: `Booking ${saved.booking_code} (added by admin)`,
+        });
+        saved.credit_ledger_id = ledger.id;
+        await manager.save(Booking, saved);
+      }
+
+      return saved.id;
+    });
+
+    const created = await this.findDetail(bookingId);
+    // No audit-log table yet — keep a trace of who added the member.
+    this.logger.log(
+      `Admin ${adminUserId} added member ${created.member_id} to schedule ${created.schedule_id}: ` +
+        `${created.booking_code} (${created.status})`,
+    );
+    return created;
+  }
+
   // ── Cancellation ──────────────────────────────────────────────────────────
 
   cancelOwn(userId: string, bookingId: string, reason?: string): Promise<Booking> {
@@ -365,5 +504,14 @@ export class BookingsService {
       return new ConflictException('Could not create booking, please retry');
     }
     return e instanceof Error ? e : new Error('Unknown error creating booking');
+  }
+
+  /** Same as mapInsertError, worded for an admin acting on a member's behalf. */
+  private mapAdminInsertError(e: unknown): Error {
+    const mapped = this.mapInsertError(e);
+    if (mapped instanceof ConflictException && mapped.message.startsWith('You already have')) {
+      return new ConflictException('Member already has an active booking for this schedule');
+    }
+    return mapped;
   }
 }
