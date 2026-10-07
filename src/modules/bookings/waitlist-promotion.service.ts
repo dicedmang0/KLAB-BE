@@ -23,6 +23,8 @@ interface Eligibility {
   ok: boolean;
   cost?: number;
   softLaunch?: boolean;
+  /** Staff added the member themselves, overriding the soft-launch participant gate. */
+  staffOverride?: boolean;
   reason?: SkipReason;
   error?: Error;
 }
@@ -162,6 +164,11 @@ export class WaitlistPromotionService {
       );
     } catch (e) {
       if (e instanceof ForbiddenException && responseCode(e) === SOFT_LAUNCH_NOT_ELIGIBLE) {
+        // An entry staff created (POST /admin/bookings) keeps its override of the
+        // participant gate, and is free like every in-window booking.
+        if (entry.source === BookingSource.ADMIN) {
+          return { ok: true, cost: 0, softLaunch: false, staffOverride: true };
+        }
         return { ok: false, reason: 'soft_launch_ineligible', error: e };
       }
       throw e;
@@ -190,6 +197,8 @@ export class WaitlistPromotionService {
     if (eligibility.softLaunch) {
       entry.credit_cost = 0;
       entry.source = BookingSource.SOFT_LAUNCH;
+    } else if (eligibility.staffOverride) {
+      entry.credit_cost = 0;
     }
     await manager.save(Booking, entry);
 

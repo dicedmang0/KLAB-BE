@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, In, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, QueryFailedError, Repository } from 'typeorm';
 import { Booking, BookingStatus, AttendanceStatus, BookingSource } from './entities/booking.entity';
 import { Schedule, ScheduleStatus } from '../schedules/entities/schedule.entity';
 import { ClassType } from '../class-types/entities/class-type.entity';
@@ -16,7 +16,7 @@ import { Member, MemberStatus } from '../members/entities/member.entity';
 import { CreditLedgerType } from '../credits/entities/credit-ledger.entity';
 import { CreditsService } from '../credits/credits.service';
 import { MembersService } from '../members/members.service';
-import { SoftLaunchService } from '../soft-launch/soft-launch.service';
+import { SoftLaunchService, SOFT_LAUNCH_NOT_ELIGIBLE } from '../soft-launch/soft-launch.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { AdminCreateBookingDto } from './dto/admin-create-booking.dto';
 import { WaitlistPromotionService } from './waitlist-promotion.service';
@@ -209,12 +209,14 @@ export class BookingsService {
   /**
    * Books an existing member into a class on their behalf (owner/admin only).
    *
-   * Same rules as a member booking themselves: published future class, active
-   * member, soft-launch gate, credit debited at the class's cost (nothing during
-   * a soft-launch bypass or for a free class), never over capacity. The one
-   * difference is a full class: instead of 409 the member joins the back of the
-   * waitlist — exactly what the member-side waitlist join would create, so
-   * automatic promotion treats the entry like any other.
+   * Same rules as a member booking themselves — published future class, active
+   * member, credit debited at the class's cost, never over capacity — with two
+   * differences:
+   *  - a full class does not 409: the member joins the back of the waitlist,
+   *    exactly what the member-side waitlist join would create;
+   *  - the soft-launch participant gate does not apply. Staff may add ANY
+   *    registered member to an in-window class, and like every in-window
+   *    booking it is free. Outside the window the normal credit cost applies.
    *
    * Lock order is the canonical schedule → booking rows (queue) → member.
    */
@@ -259,14 +261,9 @@ export class BookingsService {
         );
       }
 
-      // 5. soft-launch gate, evaluated for the MEMBER (not the admin): true →
-      //    bypass (charge nothing); throws 403 SOFT_LAUNCH_NOT_ELIGIBLE when the
-      //    class is in-window and the member is not a participant.
-      const softLaunchBypass = await this.softLaunchService.checkBooking(
-        manager,
-        member.user_id,
-        schedule.start_time,
-      );
+      // 5. soft launch, evaluated for the MEMBER (not the admin). In-window
+      //    classes are free; a non-participant is let through as a staff override.
+      const softLaunch = await this.softLaunchForStaff(manager, member, schedule);
 
       const classType = await manager.findOne(ClassType, {
         where: { id: schedule.class_type_id },
@@ -293,7 +290,7 @@ export class BookingsService {
       }
 
       // 6b. seat available → confirmed booking, credit debited in the same transaction
-      const cost = softLaunchBypass ? 0 : classCost;
+      const cost = softLaunch.inWindow ? 0 : classCost;
       if (cost > 0 && member.credit_balance < cost) {
         throw new BadRequestException('Member has insufficient credit balance');
       }
@@ -304,9 +301,9 @@ export class BookingsService {
         schedule_id: schedule.id,
         status: BookingStatus.CONFIRMED,
         attendance_status: AttendanceStatus.NOT_CHECKED_IN,
-        // A soft-launch bypass keeps its own source so participant booking
+        // A participant's bypass keeps its own source so participant booking
         // counts stay correct, same as member bookings and promotions.
-        source: softLaunchBypass ? BookingSource.SOFT_LAUNCH : BookingSource.ADMIN,
+        source: softLaunch.participant ? BookingSource.SOFT_LAUNCH : BookingSource.ADMIN,
         credit_cost: cost,
       });
 
@@ -478,6 +475,31 @@ export class BookingsService {
     }
     if (new Date(schedule.start_time).getTime() <= Date.now()) {
       throw new BadRequestException('Schedule has already started');
+    }
+  }
+
+  /**
+   * Soft-launch status of a class for a staff-made booking. `inWindow` → the
+   * class is free; `participant` → the member holds a soft-launch slot. Unlike
+   * the member flow, a non-participant is not rejected.
+   */
+  private async softLaunchForStaff(
+    manager: EntityManager,
+    member: Member,
+    schedule: Schedule,
+  ): Promise<{ inWindow: boolean; participant: boolean }> {
+    try {
+      const bypass = await this.softLaunchService.checkBooking(
+        manager,
+        member.user_id,
+        schedule.start_time,
+      );
+      return { inWindow: bypass, participant: bypass };
+    } catch (e) {
+      const res = e instanceof ForbiddenException ? e.getResponse() : null;
+      const code = typeof res === 'object' && res !== null ? (res as { code?: string }).code : null;
+      if (code === SOFT_LAUNCH_NOT_ELIGIBLE) return { inWindow: true, participant: false };
+      throw e;
     }
   }
 

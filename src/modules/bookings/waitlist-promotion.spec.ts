@@ -746,24 +746,65 @@ describe('admin booking on behalf of a member', () => {
     expect((await rejection(add(w, 'N'))).getStatus()).toBe(400);
   });
 
-  it('soft launch: a non-participant is rejected, a participant is booked free', async () => {
+  it('soft launch: any registered member can be added, free; a participant keeps the soft_launch source', async () => {
     const active = { start: new Date(NOW - DAY), end: new Date(NOW + 5 * DAY) };
     const w = world({ softLaunch: active });
-    w.member('N');
+    w.member('N', { credit: 0 });
     w.member('P', { credit: 0 });
     w.participant('P');
 
-    const denied = await rejection(add(w, 'N'));
-    expect(denied).toBeInstanceOf(ForbiddenException);
-    expect(denied.getResponse().code).toBe(SOFT_LAUNCH_NOT_ELIGIBLE);
-
+    await add(w, 'N');
     await add(w, 'P');
+
+    expect(created(w, 'N')).toMatchObject({
+      status: BookingStatus.CONFIRMED,
+      credit_cost: 0,
+      source: BookingSource.ADMIN,
+    });
     expect(created(w, 'P')).toMatchObject({
       status: BookingStatus.CONFIRMED,
       credit_cost: 0,
       source: BookingSource.SOFT_LAUNCH,
     });
+    expect(w.debits('N')).toHaveLength(0);
     expect(w.debits('P')).toHaveLength(0);
+  });
+
+  it('soft launch: the member flow still rejects a non-participant', async () => {
+    const active = { start: new Date(NOW - DAY), end: new Date(NOW + 5 * DAY) };
+    const w = world({ softLaunch: active });
+    w.member('N');
+
+    const denied = await rejection(w.bookings.createForMember('u-N', { schedule_id: 'sch' }));
+
+    expect(denied).toBeInstanceOf(ForbiddenException);
+    expect(denied.getResponse().code).toBe(SOFT_LAUNCH_NOT_ELIGIBLE);
+  });
+
+  it('soft launch: a non-participant waitlisted by staff is promoted free when a seat opens', async () => {
+    const active = { start: new Date(NOW - DAY), end: new Date(NOW + 5 * DAY) };
+    const w = world({ softLaunch: active });
+    w.confirmed('A', 'B', 'C', 'D');
+    w.member('N', { credit: 0 });
+    await add(w, 'N');
+    expect(w.state().waitlist).toEqual(['#1 N']);
+
+    await w.bookings.cancelAny('b-A', 'admin');
+
+    expect(w.state()).toEqual({ confirmed: ['B', 'C', 'D', 'N'], waitlist: [] });
+    expect(created(w, 'N')).toMatchObject({ credit_cost: 0, source: BookingSource.ADMIN });
+    expect(w.debits('N')).toHaveLength(0);
+  });
+
+  it('soft launch: a non-participant who joined the waitlist themselves is still skipped', async () => {
+    const active = { start: new Date(NOW - DAY), end: new Date(NOW + 5 * DAY) };
+    const w = world({ softLaunch: active });
+    w.confirmed('A', 'B', 'C', 'D');
+    w.waitlisted('N', 1);
+
+    await w.bookings.cancelAny('b-A', 'admin');
+
+    expect(w.state()).toEqual({ confirmed: ['B', 'C', 'D'], waitlist: ['#1 N'] });
   });
 
   it('locks schedule → queue → member', async () => {

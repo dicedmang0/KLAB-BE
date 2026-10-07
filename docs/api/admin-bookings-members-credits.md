@@ -90,11 +90,11 @@ Books an **existing member** into a class on their behalf (e.g. a member asks th
 | `member_id` | uuid | Yes | `id` from `GET /admin/members` (the member id, not the user id) |
 | `schedule_id` | uuid | Yes | `id` of a published schedule that has not started |
 
-**Behaviour** — same rules as a member booking themselves:
+**Behaviour** — same rules as a member booking themselves, except that the soft-launch participant gate does not apply:
 
-- **Seat available** → booking is created `confirmed`. Credit is debited at the class type's `credit_cost` (nothing for a free class or during a soft-launch bypass). `source` is `admin`, or `soft_launch` when the soft-launch bypass applied.
+- **Seat available** → booking is created `confirmed`. Credit is debited at the class type's `credit_cost` (nothing for a free class or a class inside the soft-launch window). `source` is `admin`, or `soft_launch` when the member is a soft-launch participant booked inside the window.
 - **Class full** → the member is added to the **back of the waitlist** (`status: "waitlisted"`, `waitlist_position` set, `source: "admin"`). Nothing is charged. Automatic promotion treats the entry like any other waitlist entry.
-- **Soft launch** → while the soft-launch window is active for the class, only allocated participants can be added (the gate is evaluated for the member, not the admin).
+- **Soft launch** → staff can add **any registered member** to a class inside the soft-launch window, participant or not, and the booking is free. A non-participant waitlisted this way is also promoted automatically (free) when a seat opens. Members booking themselves are still limited to participants.
 
 Read `status` on the response to tell the two outcomes apart.
 
@@ -105,7 +105,7 @@ Read `status` on the response to tell the two outcomes apart.
 | Status | Condition |
 |---|---|
 | 400 | Validation failed; schedule not open for booking or already started; member account not active; member has insufficient credit balance |
-| 403 | Caller is not `owner`/`admin`; or `code: "SOFT_LAUNCH_NOT_ELIGIBLE"` — class is reserved for soft-launch participants and the member is not one |
+| 403 | Caller is not `owner`/`admin` |
 | 404 | Member or schedule not found |
 | 409 | Member already has an active booking, or is already on the waitlist, for this schedule |
 
