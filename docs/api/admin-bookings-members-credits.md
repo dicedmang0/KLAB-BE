@@ -232,6 +232,37 @@ Returns all members. Supports free-text search and status filter.
 
 ---
 
+## POST /admin/members/export/vibefam
+
+Read-only migration export for Vibefam. Requires Bearer authentication and `members:read`.
+
+Exports every user with the `member` role (including legacy registrations without a member profile), plus unlinked member profiles. Includes all account statuses; directory search, status, and package filters do not apply. Staff accounts are excluded. Only email and full name are selected; no passwords, local packages, bookings, or credits are read or changed.
+
+Create a private dummy package named `KLAB MEMBER MIGRATION` in Vibefam with price 0 and 1 credit. Per Vibefam's confirmation, the CSV may use `classes_left: 0` and expiry may be tomorrow. Its exact name and the migration values below apply to every exported member.
+
+```json
+{
+  "package_name": "KLAB MEMBER MIGRATION",
+  "date_purchased": "2026-10-27",
+  "classes_left": 0,
+  "expiry_date": "2026-10-28"
+}
+```
+
+All four fields are required. Dates must be real calendar dates in `YYYY-MM-DD`; expiry must be on or after purchase. Classes left must be a nonnegative integer. Admin defaults to `KLAB MEMBER MIGRATION`, purchase today (WIB), 0 classes left, and expiry tomorrow (WIB). All values remain editable; the sample dates above are illustrative.
+
+**Response `201`:** UTF-8 CSV attachment (`text/csv`), without a JSON envelope. Filename: `klab-members-vibefam-YYYY-MM-DD.csv` using the purchase date. Column order matches the Vibefam template:
+
+```csv
+Email,Full name,Package name,Date purchased,Classes left,Expiry date,Price (optional),Renewal cycles left (optional)
+```
+
+Dates are formatted `DD/MM/YYYY`; price and renewal cycles are blank. Values containing quotes, commas, line breaks, or Unicode are preserved using CSV quoting. Export returns `400` for no members, missing/invalid identities, duplicate emails (case-insensitive), or invalid migration values. It never silently drops members.
+
+In Admin, open **Members → Export Vibefam CSV**, fill in the migration values, and download the CSV. Passwords are unnecessary: per the supplied Vibefam guidance, migrated members sign up using their migrated email.
+
+---
+
 ## GET /admin/members/:id
 
 **Permission:** `members:read`

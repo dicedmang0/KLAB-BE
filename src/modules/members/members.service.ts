@@ -1,9 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { isEmail } from 'class-validator';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { Member, MemberStatus } from './entities/member.entity';
 import { User } from '../users/entities/user.entity';
 import { ListMembersDto } from './dto/list-members.dto';
+import { ExportMembersDto } from './dto/export-members.dto';
 
 /** Member-facing profile — safe subset for the authenticated member's own view. */
 export interface MemberProfileView {
@@ -107,6 +109,64 @@ export class MembersService {
     const member = await this.membersRepo.findOne({ where: { id }, relations: ['user'] });
     if (!member) throw new NotFoundException(`Member ${id} not found`);
     return toMemberView(member);
+  }
+
+  /** Read-only migration export, including legacy registrations without a member profile. */
+  async exportForVibefam(dto: ExportMembersDto): Promise<string> {
+    if (dto.expiry_date < dto.date_purchased) {
+      throw new BadRequestException('Expiry date must be on or after date purchased.');
+    }
+
+    // Select identities only. Never read passwords or depend on local booking/package data.
+    const members: { email: string | null; full_name: string | null }[] = await this.membersRepo
+      .query(`
+        SELECT COALESCE(NULLIF(BTRIM(u.email), ''), m.email) AS email,
+               COALESCE(NULLIF(BTRIM(u.full_name), ''),
+                        NULLIF(BTRIM(CONCAT_WS(' ', m.first_name, m.last_name)), '')) AS full_name
+        FROM users u
+        JOIN roles r ON r.id = u.role_id AND r.name = 'member'
+        LEFT JOIN members m ON m.user_id = u.id
+        UNION ALL
+        SELECT m.email, NULLIF(BTRIM(CONCAT_WS(' ', m.first_name, m.last_name)), '') AS full_name
+        FROM members m
+        WHERE m.user_id IS NULL
+        ORDER BY email
+      `);
+
+    if (!members.length) throw new BadRequestException('No members to export.');
+
+    const identities = members.map((m) => ({
+      email: m.email?.trim() ?? '',
+      name: m.full_name?.trim() ?? '',
+    }));
+    const invalid = identities.filter((m) => !isEmail(m.email) || !m.name).length;
+    const duplicates =
+      identities.length - new Set(identities.map((m) => m.email.toLowerCase())).size;
+    if (invalid || duplicates) {
+      throw new BadRequestException(
+        `Export blocked: ${invalid} member(s) have a missing/invalid email or name; ` +
+          `${duplicates} duplicate email(s). Correct member data before exporting.`,
+      );
+    }
+
+    const csvCell = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
+    const csvDate = (value: string) => value.split('-').reverse().join('/');
+    const header =
+      'Email,Full name,Package name,Date purchased,Classes left,Expiry date,Price (optional),Renewal cycles left (optional)';
+    const rows = identities.map(
+      (m) =>
+        [
+          m.email,
+          m.name,
+          dto.package_name,
+          csvDate(dto.date_purchased),
+          dto.classes_left,
+          csvDate(dto.expiry_date),
+        ]
+          .map(csvCell)
+          .join(',') + ',,',
+    );
+    return [header, ...rows, ''].join('\r\n');
   }
 
   /**
